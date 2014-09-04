@@ -1,0 +1,6 @@
+
+# make APP=lzss
+
+app_load emc.aplx all 1-16 16
+sleep
+app_sig all 16 sync0

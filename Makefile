@@ -22,8 +22,7 @@
 # make APP=my_example GNU=0 THUMB=0
 
 # Name of app (derived from C source - eg sark.c)
-APP  := emc
-APP2 := crc
+APP := emc
 
 # Configuration options
 
@@ -134,7 +133,7 @@ LS  := \ls -l
 # List of objects making up the application. If there are other files
 # in the application, add their object file names to this variable.
 
-OBJECTS := $(APP).o $(APP2).o
+OBJECTS := $(APP).o crc.o
 
 
 # Primary target is an APLX file - built from the ELF
@@ -175,7 +174,7 @@ $(APP).elf: $(OBJECTS) $(SCRIPT) $(LIBRARY)
 # Build the main object file. If there are other files in the
 # application, place their build dependencies below this one.
 
-$(APP).o: $(APP).c $(APP2).c $(INC_DIR)/spinnaker.h $(INC_DIR)/sark.h $(INC_DIR)/spin1_api.h
+$(APP).o: $(APP).c crc.c $(INC_DIR)/spinnaker.h $(INC_DIR)/sark.h $(INC_DIR)/spin1_api.h
 	$(CC) $(CFLAGS) $(APP).c
 
 # Tidy and cleaning dependencies
