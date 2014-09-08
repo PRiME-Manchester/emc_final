@@ -1,6 +1,5 @@
 #include <string.h>
 #include "spin1_api.h"
-#include "crc.h"
 #include "lzss.h"
 #include "router.h"
 
@@ -63,12 +62,13 @@ void router_setup();
 void allocate_memory();
 void gen_random_data(uint trial_num);
 void store_packets(uint key, uint payload);
-void app_done();
 void tick_callback (uint ticks, uint null);
+void report_status(uint ticks, uint null);
+void app_done();
 void sdp_init();
 char *itoa (uint n);
 int  count_chars(char *str);
-void report_status(uint ticks, uint null);
+
 void send_msg(char *s, uint s_len);
 int intg(float num);
 int frac(float num, uint precision);
@@ -120,7 +120,7 @@ int c_main(void)
   spin1_start(SYNC_WAIT);
 
   trial_num = 0;
-  while(1)
+  while(trial_num<=1)
   {
     // Generate the random data for encoding/decoding and trasmitting to the
     // neighbouring chips
@@ -136,7 +136,6 @@ int c_main(void)
     trial_num++;
   }
 
-
   // report results
   app_done();
 
@@ -144,13 +143,11 @@ int c_main(void)
 }
 
 
+/* ------------------------------------------------------------------- */
+/* initialise routing entries                                          */
+/* ------------------------------------------------------------------- */
 void router_setup(void)
 {
-  /* ------------------------------------------------------------------- */
-  /* initialise routing entries                                          */
-  /* ------------------------------------------------------------------- */
-  /* set a MC routing table entry to send my packets back to me */
-
   uint e;
     
   if (core==1) // core 1 of any chip
@@ -183,12 +180,6 @@ void router_setup(void)
   /* ------------------------------------------------------------------- */
   io_printf (IO_BUF, "[Core %d] -- Routes configured\n", coreID);
 
-  // Initialise CRC table
-  // Work in progress - since comparing the decoded data with the original data
-  // the CRC computation is not critical. Also, the cores have enough work to
-  // do while they're compressing the data
-  //crcInit();
-
 }
 
 
@@ -213,8 +204,12 @@ void allocate_memory(void)
     // Original array
     if (!(data_orig.buffer   = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER*sizeof(char), 0, ALLOC_LOCK)))
     {
-      io_printf(IO_DEF, "Unable to allocate memory!\n");
-      spin1_exit(0);
+      // Send SDP message
+      strcpy(str, "Unable to allocate memory!\n");
+      s_len = count_chars(str);
+      send_msg(str, s_len);
+
+      rt_error(RTE_ABORT);
     }      
     //Initialize buffer
     //for(i=0; i<SDRAM_BUFFER_X; i++)
@@ -223,8 +218,12 @@ void allocate_memory(void)
     // Compressed array
     if (!(data_enc.buffer = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER_X*sizeof(char), 0, ALLOC_LOCK)))
     {
-      io_printf(IO_DEF, "Unable to allocate memory!\n");
-      spin1_exit(0);
+      // Send SDP message
+      strcpy(str, "Unable to allocate memory!\n");
+      s_len = count_chars(str);
+      send_msg(str, s_len);
+
+      rt_error(RTE_ABORT);
     }
     //Initialize buffer
     for(i=0; i<SDRAM_BUFFER_X; i++)
@@ -233,8 +232,12 @@ void allocate_memory(void)
     // Decompressed array
     if (!(data_dec.buffer = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER*sizeof(char), 0, ALLOC_LOCK)))
     {
-      io_printf(IO_DEF, "Unable to allocate memory!\n");
-      spin1_exit(0);
+      // Send SDP message
+      strcpy(str, "Unable to allocate memory!\n");
+      s_len = count_chars(str);
+      send_msg(str, s_len);
+
+      rt_error(RTE_ABORT);
     }
     //Initialize buffer
     for(i=0; i<SDRAM_BUFFER; i++)
@@ -305,7 +308,7 @@ void encode_decode(uint core, uint chip)
 
 // Transmit packets to neighbouring chips
 // Cores 1-6 will send packets to the neighbors on the N, S, E, W, NE, SW links
-// Cores 1-6 are already inferred from the calling function (encode_decode_transmit)
+// Cores 1-6 are already inferred from the calling function (encode_decode)
 // Cores 7-12 receive
 void tx_packets(uint none1, uint none2)
 {
