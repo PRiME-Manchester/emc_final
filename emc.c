@@ -10,8 +10,8 @@
 
 #define abs(x) ((x)<0 ? -(x) : (x))
 
-#define TIMER_TICK_PERIOD  10000 // 10ms
-#define TOTAL_TICKS        90000 // 10ms*30000 = 300s
+#define TIMER_TICK_PERIOD  100000 // 100ms
+#define TOTAL_TICKS        3000 // 100ms*30000 = 300s = 5min
 #define SDRAM_BUFFER       1000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
@@ -58,10 +58,10 @@ typedef struct sdram
 sdram_t data_orig, data_enc, data_dec;
 
 // Spinnaker function prototypes
-void encode_decode_transmit(uint core, uint chip);
-void router_setup(uint core, uint chip);
-void allocate_memory(uint core, uint chip);
-void gen_random_data(uint core, uint chip);
+void encode_decode();
+void router_setup();
+void allocate_memory();
+void gen_random_data(uint trial_num);
 void store_packets(uint key, uint payload);
 void app_done();
 void tick_callback (uint ticks, uint null);
@@ -76,10 +76,11 @@ int frac(float num, uint precision);
 // Tx/Rx packets function prototypes
 void count_packets(uint key, uint payload);
 void tx_packets (uint none1, uint none2);
-void check_packets_rx (uint none1, uint none2);
 
 int c_main(void)
 {
+  uint trial_num;
+
   // Get core and chip IDs
   coreID = spin1_get_core_id();
   chipID = spin1_get_chip_id();
@@ -99,28 +100,42 @@ int c_main(void)
   // capture rx packets and store them in SDRAM
   spin1_callback_on(MCPL_PACKET_RECEIVED, store_packets, -1);
 
-  // Timer callback
+  // Timer callback which reports status to the host
   spin1_callback_on(TIMER_TICK, report_status, 1);
-
-  // Schedule the encode/decode process
-  spin1_schedule_callback(encode_decode_transmit, 0, 0, 2);
-
 
   // -----------------------
   // Initialization phase
   // -----------------------
   // Setup router links
-  router_setup(coreID, chipID);
+  router_setup();
   
-  // Allocate SDRAM memory for the original, encoded and decoded arrays
-  allocate_memory(coreID, chipID);
+  // initialise SDP message buffer
+  sdp_init();
 
-  // Generate the random data for encoding/decoding and trasmitting to the
-  // neighbouring chips
-  gen_random_data(coreID, chipID);
+  // Allocate SDRAM memory for the original, encoded and decoded arrays
+  allocate_memory();
 
   // Go
+  // *** Where should this be placed??
   spin1_start(SYNC_WAIT);
+
+  trial_num = 0;
+  while(1)
+  {
+    // Generate the random data for encoding/decoding and trasmitting to the
+    // neighbouring chips
+    gen_random_data(trial_num); // *** Pass the trial number to change the random numbers on each trial ***
+
+    // Encode and decode the previously generated random data and store in SDRAM
+    encode_decode();
+
+    // Schedule transmission
+    spin1_schedule_callback(tx_packets, 0, 0, 2);
+
+    // Increment trial number
+    trial_num++;
+  }
+
 
   // report results
   app_done();
@@ -129,7 +144,7 @@ int c_main(void)
 }
 
 
-void router_setup(uint core, uint chip)
+void router_setup(void)
 {
   /* ------------------------------------------------------------------- */
   /* initialise routing entries                                          */
@@ -178,7 +193,7 @@ void router_setup(uint core, uint chip)
 
 
 // Allocate the SDRAM memory for the transmit as well as the receive chips
-void allocate_memory(uint core, uint chip)
+void allocate_memory(void)
 {
   int  tmp, i, err=0;
   char str[100];
@@ -190,9 +205,6 @@ void allocate_memory(uint core, uint chip)
 
     // Welcome message
     io_printf (IO_DEF, "[chip (%d,%d) core %d] LZSS Encode/Decode Test\n", chipID>>8, chipID&255, coreID);
-
-    //Seed random number generate
-    sark_srand(chipID + coreID);
 
     /*******************************************************/
     /* Allocate memory                                     */
@@ -231,18 +243,23 @@ void allocate_memory(uint core, uint chip)
 }
 
 // Generate the random data array for the transmit chips
-void gen_random_data(uint core, uint chip)
+void gen_random_data(uint trial_num)
 {
-  if (coreID>=1 && coreID<=CHIPS_TX_N)
+  if (coreID>=1 && coreID<=CHIPS_TX_N+CHIPS_RX_N)
   {
-    //Initialize buffer
-    for(uint i=0; i<SDRAM_BUFFER; i++)
-      data_orig.buffer[i] = sark_rand()%256;
+    //Seed random number generate
+    sark_srand(chipID + coreID + trial_num%1000);
 
-    //Assign data size
-    data_orig.size = SDRAM_BUFFER;
+    if (coreID>=1 && coreID<=CHIPS_TX_N)
+    {
+      //Initialize buffer
+      for(uint i=0; i<SDRAM_BUFFER; i++)
+        data_orig.buffer[i] = sark_rand()%256;
+
+      //Assign data size
+      data_orig.size = SDRAM_BUFFER;
+    }
   }
-
 }
 
 
@@ -251,7 +268,7 @@ void gen_random_data(uint core, uint chip)
 //
 // Since the LZSS algorithm is trying to compress random data, the result is
 // that the output array is bigger than the input array by approximately 12%
-void encode_decode_transmit(uint core, uint chip)
+void encode_decode(uint core, uint chip)
 {
   int  tmp, i, err=0;
   char str[100];
@@ -275,53 +292,16 @@ void encode_decode_transmit(uint core, uint chip)
     #ifdef DEBUG
       io_printf(IO_BUF, "\nOutput of original array, encoded and decoded output\n");
       io_printf(IO_BUF, "--|--------------------\n");
-    #endif
 
-
-    /*******************************************************/
-    /* Check whether decoded array matches original array  */
-    /*******************************************************/
-/*    err=0;
-    for(i=0; i<data_orig.size; i++)
-    {  
-      tmp = abs(data_orig.buffer[i] - data_dec.buffer[i]);
-      err+=tmp;
-
-      #ifdef DEBUG
-        if (i<data_enc.size)
-          io_printf(IO_BUF, "%2d|  %3d  %3d  %3d  %3d\n", i, data_orig.buffer[i], data_enc.buffer[i], data_dec.buffer[i], err);
-        else
-          io_printf(IO_BUF, "%2d|  %3d       %3d  %3d\n", i, data_orig.buffer[i], data_dec.buffer[i], err);
-      #endif
-    }*/
-
-    #ifdef DEBUG
       if (i<data_enc.size)
         for(i=data_orig.size; i<data_enc.size; i++)
           io_printf(IO_BUF, "%2d|       %3d\n", i, data_enc.buffer[i]);
     #endif
 
-    // This is an encode/decode check on the same core
-/*    if (err)
-    {
-      io_printf(IO_DEF, "[chip (%d,%d) core %d] ERROR! Original and Decoded Outputs do not match!!!\n", chipID>>8, chipID&255, coreID);
-      decode_status_chip[coreID-1] = 2;
-    }
-    else
-    {
-      io_printf(IO_DEF, "[chip (%d,%d) core %d] Original and Decoded Outputs Match!\n", chipID>>8, chipID&255, coreID);
-      decode_status_chip[coreID-1] = 1;      
-    }*/
-
     finish[coreID-1] = 1;
-
-    /*******************************************************/
-    // Transmit data
-    /*******************************************************/
-    spin1_schedule_callback(tx_packets, 0, 0, 2);
   }
-
 }
+
 
 // Transmit packets to neighbouring chips
 // Cores 1-6 will send packets to the neighbors on the N, S, E, W, NE, SW links
@@ -335,7 +315,7 @@ void tx_packets(uint none1, uint none2)
   {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
     // 1 us delay
-    spin1_delay_us(2);
+    spin1_delay_us(1);
   }
   // Send end of stream marker (NB payload is 32-bit, and I'm only sending a byte at a time)
   while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
@@ -343,6 +323,8 @@ void tx_packets(uint none1, uint none2)
   for(i=0; i<data_enc.size; i++)
   {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
+    // 1 us delay
+    spin1_delay_us(1);
   }
   // Send end of stream marker (NB payload is 32-bit, and I'm onyl sending a byte at a time)
   while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
@@ -351,16 +333,31 @@ void tx_packets(uint none1, uint none2)
 // Count the packets received
 void store_packets(uint key, uint payload)
 {
-  uint i;
+  uint i, s_len;
+  char s[80];
 
   packets++;
 
   if (payload!=0xffffffff)
   {
-    if (!enc_stream)
+    if (!enc_stream && packets<=SDRAM_SIZE)
       data_orig.buffer[packets-1] = payload & 255;
-    else
+    else if (!enc_stream && packets>SDRAM_SIZE)
+    {
+      // Send SDP message
+      strcpy(s, "Error! Array index out of bounds!\n");
+      s_len = count_chars(s);
+      send_msg(s, s_len);
+    }
+    else if (enc_stream && packets<=SDRAM_SIZE_X)
       data_enc.buffer[packets-1] = payload & 255;
+    else if (enc_stream && packets>SDRAM_SIZE_X)
+    {
+      // Send SDP message
+      strcpy(s, "Error! Array index out of bounds!\n");
+      s_len = count_chars(s);
+      send_msg(s, s_len);
+    }
   }
   else
   {
@@ -384,20 +381,6 @@ void store_packets(uint key, uint payload)
   // report packet value
   //io_printf(IO_BUF, "* Key:(%d,%d) Payload:%d\n", (key>>16), (key>>8)&255, payload);
 }
-
-// Check that the correct number of packets is received
-// on cores 7-12
-void check_packets_rx(uint none1, uint none2)
-{
-  if (coreID>=7 && coreID<=12)
-  {  
-    if (packets==PACKETS_NUM+2)
-      io_printf(IO_BUF, "Correct number of packets (%d) received!\n", packets-2);
-    else
-      io_printf(IO_BUF, "* Error! Packets expected: %d. Packets received (%d).\n", PACKETS_NUM, packets-2);
-  }
-}
-
 
 // Send SDP packet to host (for reporting purposes)
 void send_msg(char *s, uint s_len)
@@ -582,7 +565,7 @@ void encode(uint coreID, uint chipID)
           t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
           t_int  = intg(t);
           t_frac = frac(t,1);
-          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Time: %d.%d s\n",
+          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Time: %d.%ds\n",
                       chipID>>8, chipID&255, coreID, progress, t_int, t_frac);
           progress_tmp = progress;
         }
@@ -599,7 +582,7 @@ void encode(uint coreID, uint chipID)
 
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Original array: %d bytes\n", chipID>>8, chipID&255, coreID, textcount);
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoded array:  %d bytes (%d%%)\n", chipID>>8, chipID&255, coreID, codecount, (codecount*100)/textcount);
-  io_printf(IO_DEF, "Time: %d.%d s\n", t_int, t_frac);
+  io_printf(IO_DEF, "Time: %d.%ds\n", t_int, t_frac);
 }
 
 void flush_bit_buffer(void)
@@ -679,12 +662,12 @@ inline void putbit1(void)
 void decode(uint coreID, uint chipID)
 {
   int i, j, k, r, c;
-  int err, tmp;
+  int err=0, tmp;
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
   t_int  = intg(t);
   t_frac = frac(t,1);
-  io_printf(IO_DEF, "Time: %d.%d s\n", t_int, t_frac);
+  io_printf(IO_DEF, "Time: %d.%ds\n", t_int, t_frac);
 
   textcount=0;
   codecount=0;
@@ -700,6 +683,18 @@ void decode(uint coreID, uint chipID)
       if ((c = getbit(8)) == LZSS_EOF)
         break;
 
+      // Error check
+      if textcount>SDRAM_SIZE
+      {
+        // Send SDP message
+        strcpy(s, "Error! Array index out of bounds!\n");
+        s_len = count_chars(s);
+        send_msg(s, s_len);
+        err = 1;
+
+        break;
+      }
+
       data_dec.buffer[textcount++] = c;
       buffer[r++] = c;
       r &= (N - 1);
@@ -712,6 +707,19 @@ void decode(uint coreID, uint chipID)
       for (k = 0; k <= j+1; k++)
       {
         c = buffer[(i+k) & (N-1)];
+
+        // Error check
+        if textcount>SDRAM_SIZE
+        {
+          // Send SDP message
+          strcpy(s, "Error! Array index out of bounds!\n");
+          s_len = count_chars(s);
+          send_msg(s, s_len);
+          err = 1;
+
+          break;
+        }
+
         data_dec.buffer[textcount++] = c;
         buffer[r++] = c;
         r &= (N-1);
@@ -719,8 +727,13 @@ void decode(uint coreID, uint chipID)
     }
   }
 
-  data_dec.size=textcount;
+  if (!err)
+    data_dec.size = textcount;
+  else
+    data_dec.size = 0;
 
+
+  // *** Put this decode checking in a separate function ***
   #ifdef DEBUG
     // Print out results
     io_printf(IO_BUF, "\nOutput of original/encoded transmitted array\n");
