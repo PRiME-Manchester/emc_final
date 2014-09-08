@@ -340,18 +340,18 @@ void store_packets(uint key, uint payload)
 
   if (payload!=0xffffffff)
   {
-    if (!enc_stream && packets<=SDRAM_SIZE)
+    if (!enc_stream && packets<=SDRAM_BUFFER)
       data_orig.buffer[packets-1] = payload & 255;
-    else if (!enc_stream && packets>SDRAM_SIZE)
+    else if (!enc_stream && packets>SDRAM_BUFFER)
     {
       // Send SDP message
       strcpy(s, "Error! Array index out of bounds!\n");
       s_len = count_chars(s);
       send_msg(s, s_len);
     }
-    else if (enc_stream && packets<=SDRAM_SIZE_X)
+    else if (enc_stream && packets<=SDRAM_BUFFER_X)
       data_enc.buffer[packets-1] = payload & 255;
-    else if (enc_stream && packets>SDRAM_SIZE_X)
+    else if (enc_stream && packets>SDRAM_BUFFER_X)
     {
       // Send SDP message
       strcpy(s, "Error! Array index out of bounds!\n");
