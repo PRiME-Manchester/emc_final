@@ -175,7 +175,7 @@ $(APP).elf: $(OBJECTS) $(SCRIPT) $(LIBRARY)
 # application, place their build dependencies below this one.
 
 $(APP).o: $(APP).c crc.c $(INC_DIR)/spinnaker.h $(INC_DIR)/sark.h $(INC_DIR)/spin1_api.h
-	$(CC) $(CFLAGS) $(APP).c
+	$(CC) $(CFLAGS) -Wall $(APP).c
 
 # Tidy and cleaning dependencies
 

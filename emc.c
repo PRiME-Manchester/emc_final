@@ -9,8 +9,8 @@
 
 #define abs(x) ((x)<0 ? -(x) : (x))
 
-#define TIMER_TICK_PERIOD  100000 // 100ms
-#define TOTAL_TICKS        3000 // 100ms*30000 = 300s = 5min
+#define TIMER_TICK_PERIOD  10000 // 100ms
+#define TOTAL_TICKS        30000 // 100ms*30000 = 300s = 5min
 #define SDRAM_BUFFER       100000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
@@ -57,10 +57,10 @@ typedef struct sdram
 sdram_t data_orig, data_enc, data_dec;
 
 // Spinnaker function prototypes
-void encode_decode();
-void router_setup();
-void allocate_memory();
-void gen_random_data(uint trial_num);
+void encode_decode(uint core, uint chip);
+void router_setup(uint core, uint chip);
+void allocate_memory(uint core, uint chip);
+void gen_random_data(uint core, uint chip, uint trial_num);
 void store_packets(uint key, uint payload);
 void tick_callback (uint ticks, uint null);
 void report_status(uint ticks, uint null);
@@ -90,6 +90,7 @@ int c_main(void)
   chipIDy = chipID&255;
   chipNum = (chipIDx * NUMBER_OF_YCHIPS) + chipIDy;
 
+  // initialise SDP message buffer
   sdp_init();
   *finish=0;
 
@@ -111,23 +112,20 @@ int c_main(void)
   // Initialization phase
   // -----------------------
   // Setup router links
-  router_setup();
+  router_setup(coreID, chipID);
   
-  // initialise SDP message buffer
-  sdp_init();
-
   // Allocate SDRAM memory for the original, encoded and decoded arrays
-  allocate_memory();
+  allocate_memory(coreID, chipID);
 
     trial_num = 0;
 //  while(trial_num<=1)
 //  {
     // Generate the random data for encoding/decoding and trasmitting to the
     // neighbouring chips
-    gen_random_data(trial_num); // *** Pass the trial number to change the random numbers on each trial ***
+    gen_random_data(coreID, chipID, trial_num); // *** Pass the trial number to change the random numbers on each trial ***
 
     // Encode and decode the previously generated random data and store in SDRAM
-    encode_decode();
+    encode_decode(coreID, chipID);
 
     // Go
     // *** Where should this be placed??
@@ -149,7 +147,7 @@ int c_main(void)
 /* ------------------------------------------------------------------- */
 /* initialise routing entries                                          */
 /* ------------------------------------------------------------------- */
-void router_setup(void)
+void router_setup(uint core, uint chip)
 {
   uint e;
     
@@ -161,21 +159,21 @@ void router_setup(void)
 
     // Set up external links
     //         entry key             mask      route             
-    rtr_mc_set(e,    (chipID<<8)+NORTH, MASK_ALL, N_LINK);
-    rtr_mc_set(e+1,  (chipID<<8)+SOUTH, MASK_ALL, S_LINK);
-    rtr_mc_set(e+2,  (chipID<<8)+EAST,  MASK_ALL, E_LINK);
-    rtr_mc_set(e+3,  (chipID<<8)+WEST,  MASK_ALL, W_LINK);
-    rtr_mc_set(e+4,  (chipID<<8)+NEAST, MASK_ALL, NE_LINK);
-    rtr_mc_set(e+5,  (chipID<<8)+SWEST, MASK_ALL, SW_LINK);
+    rtr_mc_set(e,    (chip<<8)+NORTH, MASK_ALL, N_LINK);
+    rtr_mc_set(e+1,  (chip<<8)+SOUTH, MASK_ALL, S_LINK);
+    rtr_mc_set(e+2,  (chip<<8)+EAST,  MASK_ALL, E_LINK);
+    rtr_mc_set(e+3,  (chip<<8)+WEST,  MASK_ALL, W_LINK);
+    rtr_mc_set(e+4,  (chip<<8)+NEAST, MASK_ALL, NE_LINK);
+    rtr_mc_set(e+5,  (chip<<8)+SWEST, MASK_ALL, SW_LINK);
 
     // Set up chip routes
     //         entry key                        mask      route             
-    rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
-    rtr_mc_set(e+7,  ((chipID-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
-    rtr_mc_set(e+8,  ((chipID+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
-    rtr_mc_set(e+9,  ((chipID-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
-    rtr_mc_set(e+10, ((chipID+x1+y1)<<8) + SWEST, MASK_ALL, CORE11); // from SW
-    rtr_mc_set(e+11, ((chipID-x1-y1)<<8) + NEAST, MASK_ALL, CORE12); // from NE
+    rtr_mc_set(e+6,  ((chip+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
+    rtr_mc_set(e+7,  ((chip-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
+    rtr_mc_set(e+8,  ((chip+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
+    rtr_mc_set(e+9,  ((chip-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
+    rtr_mc_set(e+10, ((chip+x1+y1)<<8) + SWEST, MASK_ALL, CORE11); // from SW
+    rtr_mc_set(e+11, ((chip-x1-y1)<<8) + NEAST, MASK_ALL, CORE12); // from NE
   }
 
   /* ------------------------------------------------------------------- */
@@ -187,10 +185,10 @@ void router_setup(void)
 
 
 // Allocate the SDRAM memory for the transmit as well as the receive chips
-void allocate_memory(void)
+void allocate_memory(uint core, uint chip)
 {
-  int  tmp, i, err=0, s_len;
-  char str[100];
+  int  i; //tmp, err=0, s_len;
+  //char str[100];
 
   // Transmit and receive chips memory allocation
   if (coreID>=1 && coreID<=CHIPS_TX_N+CHIPS_RX_N)
@@ -256,12 +254,12 @@ void allocate_memory(void)
 }
 
 // Generate the random data array for the transmit chips
-void gen_random_data(uint trial_num)
+void gen_random_data(uint core, uint chip, uint trial_num)
 {
   if (coreID>=1 && coreID<=CHIPS_TX_N+CHIPS_RX_N)
   {
     //Seed random number generate
-    sark_srand(chipID + coreID + trial_num%1000);
+    sark_srand(chipID + coreID);
 
     if (coreID>=1 && coreID<=CHIPS_TX_N)
     {
@@ -283,8 +281,8 @@ void gen_random_data(uint trial_num)
 // that the output array is bigger than the input array by approximately 12%
 void encode_decode(uint core, uint chip)
 {
-  int  tmp, i, err=0;
-  char str[100];
+  //int  tmp, i, err=0;
+  //char str[100];
 
   //All chips
   if (coreID>=1 && coreID<=DECODE_ST_SIZE)
@@ -346,8 +344,8 @@ void tx_packets(uint none1, uint none2)
 // Count the packets received
 void store_packets(uint key, uint payload)
 {
-  uint i, s_len;
-  char s[80];
+  //uint i, s_len;
+  //char s[80];
 
   packets++;
 
@@ -591,7 +589,6 @@ void encode(uint coreID, uint chipID)
 */
           io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Ticks: %d\n",
                       chipID>>8, chipID&255, coreID, progress, spin1_get_simulation_time());
-
           progress_tmp = progress;
         }
 
@@ -688,8 +685,8 @@ inline void putbit1(void)
 void decode(uint coreID, uint chipID)
 {
   int i, j, k, r, c;
-  int err=0, tmp, s_len;
-  unsigned char s[80];
+  int err=0, tmp; //, s_len;
+  //unsigned char s[80];
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
   t_int  = intg(t);
