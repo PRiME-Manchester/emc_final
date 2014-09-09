@@ -56,6 +56,7 @@ typedef struct sdram
 
 sdram_t data_orig, data_enc, data_dec;
 
+
 typedef struct sdram2
 {
   uint orig_size;
@@ -72,6 +73,8 @@ void gen_random_data(uint trial_num);
 void encode_decode(uint none1, uint none2);
 void store_packets(uint key, uint payload);
 void report_status(uint ticks, uint null);
+void report_rx_packets(uint ticks, uint null);
+void report_rx_packets2(uint none1, uint none2);
 void app_done();
 void sdp_init();
 char *itoa (uint n);
@@ -110,7 +113,8 @@ int c_main(void)
   spin1_callback_on(MCPL_PACKET_RECEIVED, store_packets, -1);
 
   // Timer callback which reports status to the host
-  spin1_callback_on(TIMER_TICK, report_status, 1);
+  //spin1_callback_on(TIMER_TICK, report_status, 1);
+  spin1_callback_on(TIMER_TICK, report_rx_packets, 1);
 
   // Encode and decode the previously generated random data and store in SDRAM
   spin1_schedule_callback(encode_decode, 0, 0, 2);
@@ -235,14 +239,19 @@ void allocate_memory(void)
   }
 
   // Allocate memory for RX chips
+
   if(coreID>=CHIPS_TX_N+1 && coreID<=CHIPS_TX_N+CHIPS_RX_N)
   {
     if (!(data.buffer   = (unsigned char *)sark_xalloc (sv->sdram_heap, (SDRAM_BUFFER+SDRAM_BUFFER_X)*sizeof(char), 0, ALLOC_LOCK)))
     {
       io_printf(IO_DEF, "Unable to allocate memory!\n");
       rt_error(RTE_ABORT);
-    }      
+    }
+    //Initialize buffer
+    for(i=0; i<SDRAM_BUFFER+SDRAM_BUFFER_X; i++)
+      data.buffer[i] = 0;
   }
+
 }
 
 // Generate the random data array for the transmit chips
@@ -309,6 +318,7 @@ void tx_packets(void)
   {
     num = (data_orig.size>>shift) & 255;
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+    spin1_delay_us(3);
     shift+=8;
   }
 
@@ -317,31 +327,40 @@ void tx_packets(void)
   {
     num = (data_enc.size>>shift) & 255;
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+    spin1_delay_us(3);
     shift+=8;
   }
 
   for(i=0; i<data_orig.size; i++)
+  {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
+    spin1_delay_us(3);
+  }
 
   for(i=0; i<data_enc.size; i++)
+  {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
+    spin1_delay_us(3);
+  }
+//  while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
 }
 
 // Count the packets received
 void store_packets(uint key, uint payload)
 {
-  int s_len;
-  char s[80];
+//  int s_len;
+//  char s[80];
 
-  
-  if packets==0;
-    data.orig_size = payload;
-  else if packets==1
-    data.enc_size = payload;
+//  data.buffer[packets++] = payload;
+  data.buffer[packets++] = payload;
+
+/*  if (payload!=0xffffffff)
+    data.buffer[packets++] = payload&255;
   else
-    data.buffer[packets] = payload&255;
-
-  packets++;
+  {
+    spin1_schedule_callback(report_rx_packets2, 0, 0, 2);
+  }
+*/
 
 /*  if (payload!=0xffffffff)
   {
@@ -456,6 +475,61 @@ void sdp_init()
   my_msg.srce_addr = spin1_get_chip_id ();  // Source addr
 }
 
+void report_rx_packets(uint ticks, uint null)
+{
+  int s_len;
+  char s[80];
+  static int done=0;
+
+  if (packets>0 && ticks>=20000 && coreID>=7 && coreID<=13 & !done)
+  {
+    data.orig_size = (data.buffer[3]<<24) + (data.buffer[2]<<16) + (data.buffer[1]<<8) + data.buffer[0];
+    data.enc_size  = (data.buffer[7]<<24) + (data.buffer[6]<<16) + (data.buffer[5]<<8) + data.buffer[4];
+    io_printf(IO_DEF, "Packets expected Original: %d Encoded: %d Total: %d\n", data.orig_size, data.enc_size, data.orig_size+data.enc_size);
+    io_printf(IO_DEF, "Packets received (total): %d (%d)\n", packets-8, packets);
+
+    if (packets-8 != data.orig_size+data.enc_size)
+    {
+      io_printf(IO_DEF, "ERROR! Packets received do not match number of expected packages!\n");
+
+      strcpy(s, "ERROR! Packets received (");
+      strcat(s, itoa(packets-8));
+      strcat(s, ") Packets expected (");
+      strcat(s, itoa(data.orig_size+data.enc_size));
+      strcat(s, ")");
+      s_len = count_chars(s);
+      send_msg(s, s_len);
+    }
+    else
+      io_printf(IO_DEF, "Packets received match number of expected packages!\n");
+
+    done = 1;
+  }
+}
+
+void report_rx_packets2(uint none1, uint none2)
+{
+  int s_len;
+  char s[80];
+
+  if (packets>0)
+  {
+    data.orig_size = (data.buffer[3]<<24) + (data.buffer[2]<<16) + (data.buffer[1]<<8) + data.buffer[0];
+    data.enc_size  = (data.buffer[6]<<24) + (data.buffer[6]<<16) + (data.buffer[5]<<8) + data.buffer[4];
+    io_printf(IO_DEF, "Packets expected Original: %d Encoded: %d Total: %d\n", data.orig_size, data.enc_size, data.orig_size+data.enc_size);
+    io_printf(IO_DEF, "Packets received (total): %d (%d)\n", packets-8, packets);
+    if (packets-8 != data.orig_size+data.enc_size)
+      io_printf(IO_DEF, "Packets received does not match number of expected packages!\n");
+
+    strcpy(s, "Packets received (");
+    strcat(s, itoa(packets-8));
+    strcat(s, ") does not match number of expected packets (");
+    strcat(s, itoa(data.orig_size+data.enc_size));
+    strcat(s, ")!\n");
+    s_len = count_chars(s);
+    send_msg(s, s_len);
+  }
+}
 
 void report_status(uint ticks, uint null)
 {
