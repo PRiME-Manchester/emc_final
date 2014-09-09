@@ -11,7 +11,7 @@
 
 #define TIMER_TICK_PERIOD  100000 // 100ms
 #define TOTAL_TICKS        3000 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       1000000
+#define SDRAM_BUFFER       100000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        1000000
@@ -75,7 +75,7 @@ int frac(float num, uint precision);
 
 // Tx/Rx packets function prototypes
 void count_packets(uint key, uint payload);
-void tx_packets (uint none1, uint none2);
+void tx_packets(uint none1, uint none2);
 
 int c_main(void)
 {
@@ -103,6 +103,10 @@ int c_main(void)
   // Timer callback which reports status to the host
   spin1_callback_on(TIMER_TICK, report_status, 1);
 
+  // Schedule transmission
+  spin1_schedule_callback(tx_packets, 0, 0, 2);
+
+
   // -----------------------
   // Initialization phase
   // -----------------------
@@ -115,13 +119,9 @@ int c_main(void)
   // Allocate SDRAM memory for the original, encoded and decoded arrays
   allocate_memory();
 
-  // Go
-  // *** Where should this be placed??
-  spin1_start(SYNC_WAIT);
-
-  trial_num = 0;
-  while(trial_num<=1)
-  {
+    trial_num = 0;
+//  while(trial_num<=1)
+//  {
     // Generate the random data for encoding/decoding and trasmitting to the
     // neighbouring chips
     gen_random_data(trial_num); // *** Pass the trial number to change the random numbers on each trial ***
@@ -129,12 +129,15 @@ int c_main(void)
     // Encode and decode the previously generated random data and store in SDRAM
     encode_decode();
 
-    // Schedule transmission
-    spin1_schedule_callback(tx_packets, 0, 0, 2);
+    // Go
+    // *** Where should this be placed??
+    spin1_start(SYNC_WAIT);
+
+
 
     // Increment trial number
-    trial_num++;
-  }
+//    trial_num++;
+//  }
 
   // report results
   app_done();
@@ -150,7 +153,7 @@ void router_setup(void)
 {
   uint e;
     
-  if (core==1) // core 1 of any chip
+  if (coreID==1) // core 1 of any chip
   {
     e = rtr_alloc(12);
     if (!e)
@@ -158,21 +161,21 @@ void router_setup(void)
 
     // Set up external links
     //         entry key             mask      route             
-    rtr_mc_set(e,    (chip<<8)+NORTH, MASK_ALL, N_LINK);
-    rtr_mc_set(e+1,  (chip<<8)+SOUTH, MASK_ALL, S_LINK);
-    rtr_mc_set(e+2,  (chip<<8)+EAST,  MASK_ALL, E_LINK);
-    rtr_mc_set(e+3,  (chip<<8)+WEST,  MASK_ALL, W_LINK);
-    rtr_mc_set(e+4,  (chip<<8)+NEAST, MASK_ALL, NE_LINK);
-    rtr_mc_set(e+5,  (chip<<8)+SWEST, MASK_ALL, SW_LINK);
+    rtr_mc_set(e,    (chipID<<8)+NORTH, MASK_ALL, N_LINK);
+    rtr_mc_set(e+1,  (chipID<<8)+SOUTH, MASK_ALL, S_LINK);
+    rtr_mc_set(e+2,  (chipID<<8)+EAST,  MASK_ALL, E_LINK);
+    rtr_mc_set(e+3,  (chipID<<8)+WEST,  MASK_ALL, W_LINK);
+    rtr_mc_set(e+4,  (chipID<<8)+NEAST, MASK_ALL, NE_LINK);
+    rtr_mc_set(e+5,  (chipID<<8)+SWEST, MASK_ALL, SW_LINK);
 
     // Set up chip routes
     //         entry key                        mask      route             
-    rtr_mc_set(e+6,  ((chip+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
-    rtr_mc_set(e+7,  ((chip-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
-    rtr_mc_set(e+8,  ((chip+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
-    rtr_mc_set(e+9,  ((chip-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
-    rtr_mc_set(e+10, ((chip+x1+y1)<<8) + SWEST, MASK_ALL, CORE11); // from SW
-    rtr_mc_set(e+11, ((chip-x1-y1)<<8) + NEAST, MASK_ALL, CORE12); // from NE
+    rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
+    rtr_mc_set(e+7,  ((chipID-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
+    rtr_mc_set(e+8,  ((chipID+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
+    rtr_mc_set(e+9,  ((chipID-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
+    rtr_mc_set(e+10, ((chipID+x1+y1)<<8) + SWEST, MASK_ALL, CORE11); // from SW
+    rtr_mc_set(e+11, ((chipID-x1-y1)<<8) + NEAST, MASK_ALL, CORE12); // from NE
   }
 
   /* ------------------------------------------------------------------- */
@@ -186,7 +189,7 @@ void router_setup(void)
 // Allocate the SDRAM memory for the transmit as well as the receive chips
 void allocate_memory(void)
 {
-  int  tmp, i, err=0;
+  int  tmp, i, err=0, s_len;
   char str[100];
 
   // Transmit and receive chips memory allocation
@@ -204,12 +207,15 @@ void allocate_memory(void)
     // Original array
     if (!(data_orig.buffer   = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER*sizeof(char), 0, ALLOC_LOCK)))
     {
-      // Send SDP message
+      spin1_exit(0);
+      
+/*      // Send SDP message
       strcpy(str, "Unable to allocate memory!\n");
       s_len = count_chars(str);
       send_msg(str, s_len);
 
       rt_error(RTE_ABORT);
+      */
     }      
     //Initialize buffer
     //for(i=0; i<SDRAM_BUFFER_X; i++)
@@ -218,12 +224,14 @@ void allocate_memory(void)
     // Compressed array
     if (!(data_enc.buffer = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER_X*sizeof(char), 0, ALLOC_LOCK)))
     {
-      // Send SDP message
+      spin1_exit(0);
+/*      // Send SDP message
       strcpy(str, "Unable to allocate memory!\n");
       s_len = count_chars(str);
       send_msg(str, s_len);
 
       rt_error(RTE_ABORT);
+      */
     }
     //Initialize buffer
     for(i=0; i<SDRAM_BUFFER_X; i++)
@@ -232,12 +240,14 @@ void allocate_memory(void)
     // Decompressed array
     if (!(data_dec.buffer = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER*sizeof(char), 0, ALLOC_LOCK)))
     {
-      // Send SDP message
+      spin1_exit(0);
+/*      // Send SDP message
       strcpy(str, "Unable to allocate memory!\n");
       s_len = count_chars(str);
       send_msg(str, s_len);
 
       rt_error(RTE_ABORT);
+      */
     }
     //Initialize buffer
     for(i=0; i<SDRAM_BUFFER; i++)
@@ -343,7 +353,13 @@ void store_packets(uint key, uint payload)
 
   if (payload!=0xffffffff)
   {
-    if (!enc_stream && packets<=SDRAM_BUFFER)
+    if (!enc_stream)
+      data_orig.buffer[packets-1] = payload & 255;
+    else
+      data_enc.buffer[packets-1] = payload & 255;
+
+
+/*    if (!enc_stream && packets<=SDRAM_BUFFER)
       data_orig.buffer[packets-1] = payload & 255;
     else if (!enc_stream && packets>SDRAM_BUFFER)
     {
@@ -360,7 +376,7 @@ void store_packets(uint key, uint payload)
       strcpy(s, "Error! Array index out of bounds!\n");
       s_len = count_chars(s);
       send_msg(s, s_len);
-    }
+    }*/
   }
   else
   {
@@ -375,6 +391,8 @@ void store_packets(uint key, uint payload)
       data_enc.size = packets-1;
       packets    = 0;
       enc_stream = 0;
+
+      io_printf(IO_DEF, "Decoding neighbour data\n");
 
       // Schedule decode
       spin1_schedule_callback(decode, 0, 0, 2);
@@ -565,11 +583,15 @@ void encode(uint coreID, uint chipID)
         progress = (int)((textcount*100)/data_orig.size);
         if (progress%10==0 && progress!=progress_tmp)
         {  
-          t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
+/*          t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
           t_int  = intg(t);
           t_frac = frac(t,1);
-          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Time: %d.%ds\n",
-                      chipID>>8, chipID&255, coreID, progress, t_int, t_frac);
+          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Ticks: %d Time: %d.%ds\n",
+                      chipID>>8, chipID&255, coreID, progress, spin1_get_simulation_time(), t_int, t_frac);
+*/
+          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Ticks: %d\n",
+                      chipID>>8, chipID&255, coreID, progress, spin1_get_simulation_time());
+
           progress_tmp = progress;
         }
 
@@ -579,13 +601,14 @@ void encode(uint coreID, uint chipID)
 
   flush_bit_buffer();
 
-  t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
+/*  t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
   t_int  = intg(t);
   t_frac = frac(t,1);
-
+*/
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Original array: %d bytes\n", chipID>>8, chipID&255, coreID, textcount);
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoded array:  %d bytes (%d%%)\n", chipID>>8, chipID&255, coreID, codecount, (codecount*100)/textcount);
-  io_printf(IO_DEF, "Time: %d.%ds\n", t_int, t_frac);
+  //io_printf(IO_DEF, "Time: %d.%ds\n", t_int, t_frac);
+  io_printf(IO_DEF, "Ticks: %d\n", spin1_get_simulation_time());
 }
 
 void flush_bit_buffer(void)
@@ -665,7 +688,8 @@ inline void putbit1(void)
 void decode(uint coreID, uint chipID)
 {
   int i, j, k, r, c;
-  int err=0, tmp;
+  int err=0, tmp, s_len;
+  unsigned char s[80];
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
   t_int  = intg(t);
@@ -687,7 +711,7 @@ void decode(uint coreID, uint chipID)
         break;
 
       // Error check
-      if textcount>SDRAM_SIZE
+/*      if (textcount>SDRAM_SIZE)
       {
         // Send SDP message
         strcpy(s, "Error! Array index out of bounds!\n");
@@ -696,7 +720,7 @@ void decode(uint coreID, uint chipID)
         err = 1;
 
         break;
-      }
+      }*/
 
       data_dec.buffer[textcount++] = c;
       buffer[r++] = c;
@@ -712,7 +736,7 @@ void decode(uint coreID, uint chipID)
         c = buffer[(i+k) & (N-1)];
 
         // Error check
-        if textcount>SDRAM_SIZE
+/*        if (textcount>SDRAM_SIZE)
         {
           // Send SDP message
           strcpy(s, "Error! Array index out of bounds!\n");
@@ -721,7 +745,7 @@ void decode(uint coreID, uint chipID)
           err = 1;
 
           break;
-        }
+        }*/
 
         data_dec.buffer[textcount++] = c;
         buffer[r++] = c;
