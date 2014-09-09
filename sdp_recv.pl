@@ -48,15 +48,15 @@ sub main
 {
     process_args ();
 
-    open(MYFILE, '>eth.log');
-    $SIG{'INT'} = sub {close(MYFILE)};
+#    open(MYFILE, '>eth.log');
+#    $SIG{'INT'} = sub {close(MYFILE)};
 
     while (1)
     {
     	my $rc = $spin->recv_sdp (timeout => $timeout, debug => 4);
 
         if ($rc) {
-            printf MYFILE $rc;
+#            printf MYFILE $rc;
             printf $rc;
         }
         else {
@@ -68,7 +68,7 @@ sub main
         }
     }
 
-    close(MYFILE);
+#    close(MYFILE);
 }
 
 

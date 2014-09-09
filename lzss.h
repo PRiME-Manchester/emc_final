@@ -13,6 +13,6 @@ void putbit1(void);
 void flush_bit_buffer(void);
 void output1(int c);
 void output2(int x, int y);
-void encode(uint coreID, uint chipID);
+void encode(uint none1, uint none2);
 int  getbit(int n); /* get n bits */
-void decode(uint coreID, uint chipID);
+void decode(uint none1, uint none2);
