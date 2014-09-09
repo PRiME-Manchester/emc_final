@@ -1,5 +1,7 @@
 
 # make APP=lzss
+sp root
+iptag . 17894 1
 
 app_load emc.aplx all 1-16 16
 sleep

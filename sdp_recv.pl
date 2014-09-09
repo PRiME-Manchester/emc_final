@@ -46,18 +46,22 @@ sub process_args
 
 sub main
 {
+    my $i;
+
     process_args ();
 
-#    open(MYFILE, '>eth.log');
-#    $SIG{'INT'} = sub {close(MYFILE)};
+    open(MYFILE, '>eth.log');
+    $SIG{'INT'} = sub {close(MYFILE)};
 
+    $i = 1;
     while (1)
     {
     	my $rc = $spin->recv_sdp (timeout => $timeout, debug => 4);
 
         if ($rc) {
-#            printf MYFILE $rc;
-            printf $rc;
+            printf MYFILE $i.' '.$rc;
+            printf $i.' '.$rc;
+            $i++;
         }
         else {
             printf "# No reply\n";
@@ -68,7 +72,7 @@ sub main
         }
     }
 
-#    close(MYFILE);
+    close(MYFILE);
 }
 
 
