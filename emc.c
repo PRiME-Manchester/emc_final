@@ -9,9 +9,9 @@
 
 #define abs(x) ((x)<0 ? -(x) : (x))
 
-#define TIMER_TICK_PERIOD  10000 // 100ms
+#define TIMER_TICK_PERIOD  5000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       1000000
+#define SDRAM_BUFFER       100000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        1000000
@@ -21,12 +21,16 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
+#define TRIALS             2
 
-uint end_marker = 0;
-uint enc_stream = 0;
-uint packets = 0;
+// Address values
+#define FINISH             (SPINN_SDRAM_BASE + 0)               // size: 12 ints
+#define DECODE_STATUS_CHIP (SPINN_SDRAM_BASE + 12*sizeof(uint)) // size: 6 ints
+#define CHIP_INFO          (SPINN_SDRAM_BASE + 18*sizeof(uint)) // size: 24 ints
+
+uint packets    = 0;
 uint bit_buffer = 0;
-uint bit_mask = 128;
+uint bit_mask   = 128;
 uint codecount;
 uint textcount;
 uint buffer[N*2];
@@ -39,32 +43,39 @@ uint decode_status=0;
 float t;
 uint t_int, t_frac;
 
-// Remember that these are just base addresses and not memory allocations
-static volatile uint *const finish =
-            (uint *) (SPINN_SDRAM_BASE + 0); // size: 12 ints
+// N.B.
+// static (global scope): only declared within this file
+// volatile:              compiler does not cache variable
+// *const:                compiler uses this value directly as an addresses
+//                        (only done for efficienct reasons)
+typedef struct info
+{
+  volatile uint trial[12];
+  volatile uint progress[12];
+} info_t;
+static volatile info_t *const info               = (info_t *) CHIP_INFO;
 
-static volatile uint *const decode_status_chip =
-            (uint *) (SPINN_SDRAM_BASE + 12*sizeof(uint)); // size: 6 ints
+static volatile uint   *const finish             = (uint *) FINISH; 
+static volatile uint   *const decode_status_chip = (uint *) DECODE_STATUS_CHIP;
+
 
 sdp_msg_t my_msg;
 
-typedef struct sdram
+typedef struct sdram_tx
 {
   uint size;
   unsigned char *buffer;
-} sdram_t;
+} sdram_tx_t;
+sdram_tx_t data_orig, data_enc, data_dec;
 
-sdram_t data_orig, data_enc, data_dec;
-
-
-typedef struct sdram2
+typedef struct sdram_rx
 {
   uint orig_size;
   uint enc_size;
   unsigned char *buffer;
-} sdram2_t;
+} sdram_rx_t;
+sdram_rx_t data;
 
-sdram2_t data;
 
 // Spinnaker function prototypes
 void router_setup(void);
@@ -73,15 +84,14 @@ void gen_random_data(uint trial_num);
 void encode_decode(uint none1, uint none2);
 void store_packets(uint key, uint payload);
 void report_status(uint ticks, uint null);
-void report_rx_packets(uint ticks, uint null);
-void report_rx_packets2(uint none1, uint none2);
+void report_rx_packets(uint none1, uint none2);
 void app_done();
 void sdp_init();
-char *itoa (uint n);
+char *itoa(uint n);
+char *ftoa(float num, int precision);
 int  count_chars(char *str);
 
 void send_msg(char *s, uint s_len);
-int intg(float num);
 int frac(float num, uint precision);
 
 // Tx/Rx packets function prototypes
@@ -103,7 +113,6 @@ int c_main(void)
 
   // initialise SDP message buffer
   sdp_init();
-  *finish=0;
 
   // set timer tick value (in microseconds)
   spin1_set_timer_tick(TIMER_TICK_PERIOD);
@@ -113,8 +122,7 @@ int c_main(void)
   spin1_callback_on(MCPL_PACKET_RECEIVED, store_packets, -1);
 
   // Timer callback which reports status to the host
-  //spin1_callback_on(TIMER_TICK, report_status, 1);
-  spin1_callback_on(TIMER_TICK, report_rx_packets, 1);
+  spin1_callback_on(TIMER_TICK, report_status, 1);
 
   // Encode and decode the previously generated random data and store in SDRAM
   spin1_schedule_callback(encode_decode, 0, 0, 2);
@@ -192,8 +200,9 @@ void router_setup(void)
 // Allocate the SDRAM memory for the transmit as well as the receive chips
 void allocate_memory(void)
 {
-  int  i, s_len;
-  char str[100];
+  int  i;
+  //int s_len;
+  //char str[100];
 
   // Transmit and receive chips memory allocation
   if (coreID>=1 && coreID<=CHIPS_TX_N)
@@ -210,17 +219,17 @@ void allocate_memory(void)
     // Original array
     if (!(data_orig.buffer   = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER*sizeof(char), 0, ALLOC_LOCK)))
     {
-      io_printf(IO_DEF, "Unable to allocate memory!\n");
+      io_printf(IO_DEF, "Unable to allocate memory (Orig)!\n");
       rt_error(RTE_ABORT);
     }      
     //Initialize buffer
-    //for(i=0; i<SDRAM_BUFFER_X; i++)
-    //  data_orig.buffer[i] = 0;
+    for(i=0; i<SDRAM_BUFFER; i++)
+      data_orig.buffer[i] = 0;
 
     // Compressed array
     if (!(data_enc.buffer = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER_X*sizeof(char), 0, ALLOC_LOCK)))
     {
-      io_printf(IO_DEF, "Unable to allocate memory!\n");
+      io_printf(IO_DEF, "Unable to allocate memory (Enc)!\n");
       rt_error(RTE_ABORT);
     }
     //Initialize buffer
@@ -230,7 +239,7 @@ void allocate_memory(void)
     // Decompressed array
     if (!(data_dec.buffer = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER*sizeof(char), 0, ALLOC_LOCK)))
     {
-      io_printf(IO_DEF, "Unable to allocate memory!\n");
+      io_printf(IO_DEF, "Unable to allocate memory (Dec)!\n");
       rt_error(RTE_ABORT);
     }
     //Initialize buffer
@@ -244,7 +253,7 @@ void allocate_memory(void)
   {
     if (!(data.buffer   = (unsigned char *)sark_xalloc (sv->sdram_heap, (SDRAM_BUFFER+SDRAM_BUFFER_X)*sizeof(char), 0, ALLOC_LOCK)))
     {
-      io_printf(IO_DEF, "Unable to allocate memory!\n");
+      io_printf(IO_DEF, "Unable to allocate memory (Rx)!\n");
       rt_error(RTE_ABORT);
     }
     //Initialize buffer
@@ -279,29 +288,39 @@ void gen_random_data(uint trial_num)
 // that the output array is bigger than the input array by approximately 12%
 void encode_decode(uint none1, uint none2)
 {
-  int  tmp, i, err=0;
+  int i;
+  //int err=0;
   //char str[100];
 
-  //All chips
-  if (coreID>=1 && coreID<=DECODE_ST_SIZE)
+  for(i=0; i<TRIALS; i++)
   {
-    /*******************************************************/
-    /* Encode array                                        */
-    /*******************************************************/
-    io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoding...\n", chipID>>8, chipID&255, coreID);
-    encode();
+    if (coreID>=1 && coreID<=DECODE_ST_SIZE)
+    {
+      io_printf(IO_DEF, "\nTrial: %d\n", i+1);
+      
+      //All chips
+      info->trial[coreID-1] = i+1;
+      info->progress[coreID-1] = 0;
+      finish[coreID-1] = 0;
+      
+      /*******************************************************/
+      /* Encode array                                        */
+      /*******************************************************/
+      io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoding...\n", chipID>>8, chipID&255, coreID);
+      encode();
 
-    /*******************************************************/
-    /* Decode array (locally)                              */
-    /*******************************************************/
-    io_printf(IO_DEF, "[chip (%d,%d) core %d] Decoding...\n", chipID>>8, chipID&255, coreID);
-    decode();
+      /*******************************************************/
+      /* Decode array (locally)                              */
+      /*******************************************************/
+      io_printf(IO_DEF, "\n[chip (%d,%d) core %d] Decoding...\n", chipID>>8, chipID&255, coreID);
+      decode();
 
-    finish[coreID-1] = 1;
+      finish[coreID-1] = 1;
 
-    // Transmit packets
-    tx_packets();
+      // Transmit packets
+      //tx_packets();
 
+    }
   }
 }
 
@@ -312,13 +331,14 @@ void encode_decode(uint none1, uint none2)
 // Cores 7-12 receive
 void tx_packets(void)
 {
-  int i, num, shift=0;
+  int i, num, shift;
 
+  shift = 0;
   for (i=0; i<4; i++)
   {
     num = (data_orig.size>>shift) & 255;
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-    spin1_delay_us(3);
+    spin1_delay_us(5);
     shift+=8;
   }
 
@@ -327,98 +347,31 @@ void tx_packets(void)
   {
     num = (data_enc.size>>shift) & 255;
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-    spin1_delay_us(3);
+    spin1_delay_us(5);
     shift+=8;
   }
 
   for(i=0; i<data_orig.size; i++)
   {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
-    spin1_delay_us(3);
+    spin1_delay_us(5);
   }
 
   for(i=0; i<data_enc.size; i++)
   {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
-    spin1_delay_us(3);
+    spin1_delay_us(5);
   }
-//  while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+  while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
 }
 
 // Count the packets received
 void store_packets(uint key, uint payload)
 {
-//  int s_len;
-//  char s[80];
-
-//  data.buffer[packets++] = payload;
-  data.buffer[packets++] = payload;
-
-/*  if (payload!=0xffffffff)
-    data.buffer[packets++] = payload&255;
+  if (payload!=0xffffffff)
+    data.buffer[packets++] = payload;
   else
-  {
-    spin1_schedule_callback(report_rx_packets2, 0, 0, 2);
-  }
-*/
-
-/*  if (payload!=0xffffffff)
-  {
-//
-//    if (!enc_stream)
-//      data_orig.buffer[packets-1] = payload & 255;
-//    else
-//      data_enc.buffer[packets-1] = payload & 255;
-
-
-
-    if (!enc_stream && packets<=SDRAM_BUFFER)
-      data_orig.buffer[packets-1] = payload & 255;
-    else if (!enc_stream && packets>SDRAM_BUFFER)
-    {
-      // Send SDP message
-      strcpy(s, "Error! Array index out of bounds!\n");
-      s_len = count_chars(s);
-      send_msg(s, s_len);
-
-//      rt_error(RTE_ABORT);
-    }
-    else if (enc_stream && packets<=SDRAM_BUFFER_X)
-      data_enc.buffer[packets-1] = payload & 255;
-    else if (enc_stream && packets>SDRAM_BUFFER_X)
-    {
-      // Send SDP message
-      strcpy(s, "Error! Array index out of bounds!\n");
-      s_len = count_chars(s);
-      send_msg(s, s_len);
-
-//      rt_error(RTE_ABORT);
-    }
-
-  }
-  else
-  {
-    if (!enc_stream)
-    {
-      data_orig.size = packets-1;
-      packets    = 0;
-      enc_stream = 1;
-    }
-    else
-    {
-      data_enc.size = packets-1;
-      packets    = 0;
-      enc_stream = 0;
-
-      io_printf(IO_DEF, "Decoding neighbour data\n");
-
-      // Decode data from neighbouring chips
-      decode();
-    }
-  }
-*/
-  // report packet value
-  //io_printf(IO_BUF, "* Key:(%d,%d) Payload:%d\n", (key>>16), (key>>8)&255, payload);
+    spin1_schedule_callback(report_rx_packets, 0, 0, 2);
 }
 
 // Send SDP packet to host (for reporting purposes)
@@ -431,7 +384,7 @@ void send_msg(char *s, uint s_len)
   my_msg.length = sizeof(sdp_hdr_t) + sizeof(cmd_hdr_t) + s_len;
 
   // Send SDP message
-  spin1_send_sdp_msg(&my_msg, 100); // 10ms timeout
+  while(!spin1_send_sdp_msg(&my_msg, 10)); // 10ms timeout
 }
 
 int count_chars(char *str)
@@ -442,27 +395,6 @@ int count_chars(char *str)
 
   return i-1;
 }
-
-char *itoa (uint n)
-{
-    char s[32];
-    static char rv[32];
-    int i = 0, j;
-// pop one decimal value at a time starting
-// with the least significant
-    do {
-        s[i++] = '0' + n%10;
-        n /= 10;
-    } while (n>0);
-
-// digits will be in reverse order
-    for (j = 0; j < i; j++)
-      rv[j] = s[i-j-1];
-
-    rv[j] = '\0';
-    return rv;
-}
- 
 
 void sdp_init()
 {
@@ -475,59 +407,39 @@ void sdp_init()
   my_msg.srce_addr = spin1_get_chip_id ();  // Source addr
 }
 
-void report_rx_packets(uint ticks, uint null)
+void report_rx_packets(uint none1, uint none2)
 {
   int s_len;
-  char s[80];
-  static int done=0;
+  static int trial_num=0;
+  char s[100];
 
-  if (packets>0 && ticks>=20000 && coreID>=7 && coreID<=13 & !done)
+  if (packets>0)
   {
+    io_printf(IO_DEF, "\nTrial: %d\n", trial_num+1);
+
     data.orig_size = (data.buffer[3]<<24) + (data.buffer[2]<<16) + (data.buffer[1]<<8) + data.buffer[0];
     data.enc_size  = (data.buffer[7]<<24) + (data.buffer[6]<<16) + (data.buffer[5]<<8) + data.buffer[4];
     io_printf(IO_DEF, "Packets expected Original: %d Encoded: %d Total: %d\n", data.orig_size, data.enc_size, data.orig_size+data.enc_size);
     io_printf(IO_DEF, "Packets received (total): %d (%d)\n", packets-8, packets);
-
     if (packets-8 != data.orig_size+data.enc_size)
     {
-      io_printf(IO_DEF, "ERROR! Packets received do not match number of expected packages!\n");
+      io_printf(IO_DEF, "* ERROR! Packets received do not match number of expected packages!\n");
 
-      strcpy(s, "ERROR! Packets received (");
+      strcpy(s, "ERROR! Trial: ");
+      strcat(s, itoa(trial_num+1));
+      strcat(s, " Packets received (");
       strcat(s, itoa(packets-8));
-      strcat(s, ") Packets expected (");
+      strcat(s, ") do not match number of expected packets (");
       strcat(s, itoa(data.orig_size+data.enc_size));
-      strcat(s, ")");
+      strcat(s, ")!\n");
       s_len = count_chars(s);
       send_msg(s, s_len);
     }
     else
       io_printf(IO_DEF, "Packets received match number of expected packages!\n");
 
-    done = 1;
-  }
-}
-
-void report_rx_packets2(uint none1, uint none2)
-{
-  int s_len;
-  char s[80];
-
-  if (packets>0)
-  {
-    data.orig_size = (data.buffer[3]<<24) + (data.buffer[2]<<16) + (data.buffer[1]<<8) + data.buffer[0];
-    data.enc_size  = (data.buffer[6]<<24) + (data.buffer[6]<<16) + (data.buffer[5]<<8) + data.buffer[4];
-    io_printf(IO_DEF, "Packets expected Original: %d Encoded: %d Total: %d\n", data.orig_size, data.enc_size, data.orig_size+data.enc_size);
-    io_printf(IO_DEF, "Packets received (total): %d (%d)\n", packets-8, packets);
-    if (packets-8 != data.orig_size+data.enc_size)
-      io_printf(IO_DEF, "Packets received does not match number of expected packages!\n");
-
-    strcpy(s, "Packets received (");
-    strcat(s, itoa(packets-8));
-    strcat(s, ") does not match number of expected packets (");
-    strcat(s, itoa(data.orig_size+data.enc_size));
-    strcat(s, ")!\n");
-    s_len = count_chars(s);
-    send_msg(s, s_len);
+    trial_num++;
+    packets = 0;
   }
 }
 
@@ -535,11 +447,30 @@ void report_status(uint ticks, uint null)
 {
   uint i, s_len, finish_tmp=0;
   char s[100];
-  static uint done = 0;
+  static int done = 0;
+  static int tmp = -1;
+  int progress_sum=0;
 
-  // stop if all cores finished encode/decode process
-  for(i=0; i<DECODE_ST_SIZE; i++)
-    finish_tmp += finish[i];
+  if (chipIDx==0 && chipIDy==0 && coreID==13 && (ticks % (NUMBER_OF_XCHIPS * NUMBER_OF_YCHIPS))==chipNum )
+    {
+      for(i=0; i<6; i++)
+        progress_sum+=info->progress[i];
+
+      if (tmp!=progress_sum)
+      {
+        strcpy(s, "Trial: ");
+        strcat(s, itoa(info->trial[0]));
+
+        strcat(s, " Progress: ");
+        strcat(s, itoa(progress_sum/6));
+        strcat(s, "%% ");
+
+        s_len = count_chars(s);
+        send_msg(s, s_len);
+
+        tmp = progress_sum;
+      }
+    }
 
   //decode_status_chip[coreID-1] = decode_status;
 
@@ -586,6 +517,10 @@ void encode(void)
 {
   int i, j, f1, x, y, r, s, bufferend, c;
   int progress, progress_tmp = 0;
+
+  // Initialise values
+  bit_mask   = 128;
+  bit_buffer = 0;
 
   textcount=0;
   codecount=0;
@@ -657,10 +592,11 @@ void encode(void)
         if (progress%10==0 && progress!=progress_tmp)
         {  
           t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
-          t_int  = intg(t);
-          t_frac = frac(t,1);
-          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Time: %d.%ds\n",
-                      chipID>>8, chipID&255, coreID, progress, t_int, t_frac);
+          
+          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Time: %s s\n",
+                      chipID>>8, chipID&255, coreID, progress, ftoa(t,1));
+
+          info->progress[coreID-1] = progress;
 
           progress_tmp = progress;
         }
@@ -672,12 +608,9 @@ void encode(void)
   flush_bit_buffer();
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
-  t_int  = intg(t);
-  t_frac = frac(t,1);
-
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Original array: %d bytes\n", chipID>>8, chipID&255, coreID, textcount);
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoded array:  %d bytes (%d%%)\n", chipID>>8, chipID&255, coreID, codecount, (codecount*100)/textcount);
-  io_printf(IO_DEF, "Time: %d.%ds\n", t_int, t_frac);
+  io_printf(IO_DEF, "Time: %s s\n", ftoa(t,1));
 }
 
 void flush_bit_buffer(void)
@@ -761,9 +694,7 @@ void decode(void)
   char s[80];
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
-  t_int  = intg(t);
-  t_frac = frac(t,1);
-  io_printf(IO_DEF, "Time: %d.%ds\n", t_int, t_frac);
+  io_printf(IO_DEF, "Time: %s s\n", ftoa(t,1));
 
   textcount=0;
   codecount=0;
@@ -864,14 +795,11 @@ void decode(void)
     decode_status_chip[coreID-1] = 1;      
   }
 
-  t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
-  t_int  = intg(t);
-  t_frac = frac(t,1);
-
+  t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1e6;
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Original array: %d bytes\n", chipID>>8, chipID&255, coreID, data_orig.size);
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoded array:  %d bytes\n", chipID>>8, chipID&255, coreID, data_enc.size);
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Decoded array:  %d bytes\n", chipID>>8, chipID&255, coreID, data_dec.size);
-  io_printf(IO_DEF, "Total time elapsed: %d.%d s\n", t_int, t_frac);
+  io_printf(IO_DEF, "Total time elapsed: %s s\n", ftoa(t,1));
 }
 
 inline int getbit(int n) /* get n bits */
@@ -897,12 +825,6 @@ inline int getbit(int n) /* get n bits */
   return x;
 }
 
-// Return integer part
-int intg(float num)
-{
-  return (int)num;
-}
-
 // Return fractional part
 int frac(float num, uint precision)
 { 
@@ -915,6 +837,37 @@ int frac(float num, uint precision)
   return (int)((num-(int)num)*m);
 }
 
+char *itoa(uint n)
+{
+    char s[32];
+    static char rv[32];
+    int i = 0, j;
+// pop one decimal value at a time starting
+// with the least significant
+    do {
+        s[i++] = '0' + n%10;
+        n /= 10;
+    } while (n>0);
+
+// digits will be in reverse order
+    for (j = 0; j < i; j++)
+      rv[j] = s[i-j-1];
+
+    rv[j] = '\0';
+    return rv;
+}
+
+char *ftoa(float num, int precision)
+{
+  static char s[20];
+
+  strcpy(s, itoa((int)num));
+  strcat(s, ".");
+  strcat(s, itoa(frac(num, precision)));
+
+  return s;
+}
+
 
 void app_done ()
 {
@@ -922,4 +875,5 @@ void app_done ()
   if(coreID>=1 && coreID<=CHIPS_TX_N + CHIPS_RX_N)
     io_printf(IO_DEF, "[chip (%d,%d) core %d] Simulation lasted %d ticks.\n\n",chipID>>8, chipID&255, coreID, spin1_get_simulation_time());
 }
+
 
