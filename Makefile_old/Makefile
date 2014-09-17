@@ -24,85 +24,107 @@
 # Name of app (derived from C source - eg sark.c)
 APP := emc
 
-# Set to 1 to make Thumb code (0 for ARM)
-THUMB := 1
-
 # Configuration options
+
+# Set to 1 for GNU tools, 0 for ARM
+GNU := 1
+
 # Set to 1 if using SARK/API (0 for SARK)
 API := 1
 
+# Set to 1 to make Thumb code (0 for ARM)
+THUMB := 1
+
+# Prefix for GNU tool binaries
+GP  := arm-none-eabi
+
+# Set to 1 if making a library (advanced!)
+LIB := 0
+
+# If SPINN_DIRS is defined, use that to find include and lib directories
+# otherwise look two levels up
+
+ifdef SPINN_DIRS
+  LIB_DIR := $(SPINN_DIRS)/lib
+  INC_DIR := $(SPINN_DIRS)/include
+else
+  LIB_DIR := ../../lib
+  INC_DIR := ../../include
+endif
+
 #-------------------------------------------------------------------------------
-# Common includes for making SpiNNaker binaries
 
-ifndef GNU
-    GNU := 1
-endif
+# Set up the various compile/link options for GNU and ARM tools
 
-ifndef LIB
-    LIB := 0
-endif
-
-# If SPINN_DIRS is not defined, this is an error!
-ifndef SPINN_DIRS
-    $(error SPINN_DIRS is not set.  Please define SPINN_DIRS (possibly by running "source setup" in the spinnaker tools folder))
-endif
-SPINN_LIB_DIR = $(SPINN_DIRS)/lib
-SPINN_INC_DIR = $(SPINN_DIRS)/include
-SPINN_TOOLS_DIR = $(SPINN_DIRS)/tools
-
-
-# ------------------------------------------------------------------------------
-# Tools
+# GNU tool setup
 
 ifeq ($(GNU),1)
-  GP := arm-none-eabi
   AS := $(GP)-as --defsym GNU=1 -mthumb-interwork -march=armv5te
-  
-  ifeq ($(LIB), 1)
-    CA := $(GP)-gcc -c -Os -mthumb-interwork -march=armv5te -std=gnu99 -I $(SPINN_INC_DIR)
-    CFLAGS += -fdata-sections -ffunction-sections
-    LD := $(GP)-ld -i
-  else
-    CA := $(GP)-gcc -mthumb-interwork -march=armv5te -std=gnu99 -I $(SPINN_INC_DIR) -c
-    LD := $(GP)-gcc -T$(SPINN_TOOLS_DIR)/sark.lnk -Wl,-e,cpu_reset -Wl,-static -fdata-sections -ffunction-sections -Wl,--gc-sections -Wl,--use-blx -nostartfiles -static
-  endif
 
-	ifeq ($(API),1)
-	#  LIBRARY := -L$(LIB_DIR) -lspin1_api
-	  LIBRARY := $(SPINN_LIB_DIR)/libspin1_api.a
-	else
-	#  LIBRARY := -L$(LIB_DIR) -lsark
-	  LIBRARY := $(SPINN_LIB_DIR)/libsark.a
-	endif
-  
-  CC := $(CA) -mthumb -DTHUMB
+  CA := $(GP)-gcc -c -Os -mthumb-interwork -march=armv5te -std=gnu99 \
+	-I $(INC_DIR)
+
+  CT := $(CA) -mthumb -DTHUMB
+
+ifeq ($(LIB),1)
+  CFLAGS += -fdata-sections -ffunction-sections
+endif
+
+ifeq ($(API),1)
+#  LIBRARY := -L$(LIB_DIR) -lspin1_api
+  LIBRARY := $(LIB_DIR)/libspin1_api.a
+else
+#  LIBRARY := -L$(LIB_DIR) -lsark
+  LIBRARY := $(LIB_DIR)/libsark.a
+endif
+
+  SCRIPT := $(LIB_DIR)/sark.lnk
+
+  LD := $(GP)-gcc -T$(SCRIPT) -Wl,-e,cpu_reset -Wl,--gc-sections -Wl,--use-blx 
+
   AR := $(GP)-ar -rcs
   OC := $(GP)-objcopy
   OD := $(GP)-objdump -dxt > $(APP).txt
-  NM := $(GP)-nm
+
+# ARM tool setup
 
 else
   AS := armasm --keep --cpu=5te --apcs /interwork
-  CA := armcc -c --c99 --cpu=5te -Ospace --apcs /interwork --min_array_alignment=4 -I $(SPINN_INC_DIR)
-  CC := $(CA) --thumb -DTHUMB
-  
-  ifeq ($(LIB), 1)
-    CFLAGS += --split_sections
-    LD := armlink --partial
-  else
-    LD = armlink --scatter=$(SPINN_TOOLS_DIR)/sark.sct --remove --entry cpu_reset
-  endif
 
-  AR := armar -rsc
+  CA := armcc -c --c99 --cpu=5te --apcs /interwork --min_array_alignment=4 \
+	-I $(INC_DIR)
+
+  CT := $(CA) --thumb -DTHUMB
+
+ifeq ($(LIB),1)
+  CFLAGS += --split_sections
+endif
+
+ifeq ($(API),1)
+  LIBRARY := $(LIB_DIR)/spin1_api.a
+else
+  LIBRARY := $(LIB_DIR)/sark.a
+endif
+
+  SCRIPT := $(LIB_DIR)/sark.sct
+
+  LD := armlink --scatter=$(SCRIPT) --remove --entry cpu_reset
+
+  AR := armar -rcs
   OC := fromelf
-  OD := fromelf -cds --output
-  NM := nm
+  OD := fromelf -cds --output $(APP).txt
 
 endif
 
-RM := rm -f
-CAT = cat
-LS  = ls -l
+ifeq ($(THUMB),1)
+  CC := $(CT)
+else
+  CC := $(CA)
+endif
+
+CAT := \cat
+RM  := \rm -f
+LS  := \ls -l
 
 #-------------------------------------------------------------------------------
 
@@ -111,7 +133,7 @@ LS  = ls -l
 # List of objects making up the application. If there are other files
 # in the application, add their object file names to this variable.
 
-OBJECTS := $(APP).o
+OBJECTS := $(APP).o crc.o
 
 
 # Primary target is an APLX file - built from the ELF
@@ -152,7 +174,7 @@ $(APP).elf: $(OBJECTS) $(SCRIPT) $(LIBRARY)
 # Build the main object file. If there are other files in the
 # application, place their build dependencies below this one.
 
-$(APP).o: $(APP).c crc.c $(SPINN_INC_DIR)/spinnaker.h $(SPINN_INC_DIR)/sark.h $(SPINN_INC_DIR)/spin1_api.h
+$(APP).o: $(APP).c crc.c $(INC_DIR)/spinnaker.h $(INC_DIR)/sark.h $(INC_DIR)/spin1_api.h
 	$(CC) $(CFLAGS) -Wall $(APP).c
 
 # Tidy and cleaning dependencies

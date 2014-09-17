@@ -1,0 +1,62 @@
+# Common includes for making SpiNNaker binaries
+
+ifndef GNU
+    GNU := 1
+endif
+ifndef LIB
+    LIB := 0
+endif
+
+# If SPINN_DIRS is not defined, this is an error!
+ifndef SPINN_DIRS
+    $(error SPINN_DIRS is not set.  Please define SPINN_DIRS (possibly by running "source setup" in the spinnaker tools folder))
+endif
+SPINN_LIB_DIR = $(SPINN_DIRS)/lib
+SPINN_INC_DIR = $(SPINN_DIRS)/include
+SPINN_TOOLS_DIR = $(SPINN_DIRS)/tools
+
+
+# ------------------------------------------------------------------------------
+# Tools
+
+ifeq ($(GNU),1)
+  GP := arm-none-eabi
+  AS := $(GP)-as --defsym GNU=1 -mthumb-interwork -march=armv5te
+  
+  ifeq ($(LIB), 1)
+    CA := $(GP)-gcc -c -Os -mthumb-interwork -march=armv5te -std=gnu99 -I $(SPINN_INC_DIR)
+    CFLAGS += -fdata-sections -ffunction-sections
+    LD := $(GP)-ld -i
+  else
+    CA := $(GP)-gcc -mthumb-interwork -march=armv5te -std=gnu99 -I $(SPINN_INC_DIR) -c
+    LD := $(GP)-gcc -T$(SPINN_TOOLS_DIR)/sark.lnk -Wl,-e,cpu_reset -Wl,-static -fdata-sections -ffunction-sections -Wl,--gc-sections -Wl,--use-blx -nostartfiles -static
+  endif
+  
+  CC := $(CA) -mthumb -DTHUMB
+  AR := $(GP)-ar -rcs
+  OC := $(GP)-objcopy
+  OD := $(GP)-objdump -dxt
+  NM := $(GP)-nm
+
+else
+  AS := armasm --keep --cpu=5te --apcs /interwork
+  CA := armcc -c --c99 --cpu=5te -Ospace --apcs /interwork --min_array_alignment=4 -I $(SPINN_INC_DIR)
+  CC := $(CA) --thumb -DTHUMB
+  
+  ifeq ($(LIB), 1)
+    CFLAGS += --split_sections
+    LD := armlink --partial
+  else
+    LD = armlink --scatter=$(SPINN_TOOLS_DIR)/sark.sct --remove --entry cpu_reset
+  endif
+
+  AR := armar -rsc
+  OC := fromelf
+  OD := fromelf -cds --output
+  NM := nm
+
+endif
+
+RM := rm -f
+CAT = cat
+LS  = ls -l

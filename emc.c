@@ -11,7 +11,7 @@
 
 #define TIMER_TICK_PERIOD  5000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       100000
+#define SDRAM_BUFFER       2000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        1000000
@@ -22,11 +22,13 @@
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
 #define TRIALS             2
+#define TX_REPS            10
 
 // Address values
-#define FINISH             (SPINN_SDRAM_BASE + 0)               // size: 12 ints
-#define DECODE_STATUS_CHIP (SPINN_SDRAM_BASE + 12*sizeof(uint)) // size: 6 ints
-#define CHIP_INFO          (SPINN_SDRAM_BASE + 18*sizeof(uint)) // size: 24 ints
+#define FINISH             (SPINN_SDRAM_BASE + 0)               // size: 12 ints ( 0..11)
+#define DECODE_STATUS_CHIP (SPINN_SDRAM_BASE + 12*sizeof(uint)) // size: 6 ints  (12..17)
+#define RX_PACKETS_STATUS  (SPINN_SDRAM_BASE + 18*sizeof(uint)) // size: 6 ints  (18..23)
+#define CHIP_INFO          (SPINN_SDRAM_BASE + 24*sizeof(uint)) // size: 24 ints (24..47)
 
 uint packets    = 0;
 uint bit_buffer = 0;
@@ -57,7 +59,7 @@ static volatile info_t *const info               = (info_t *) CHIP_INFO;
 
 static volatile uint   *const finish             = (uint *) FINISH; 
 static volatile uint   *const decode_status_chip = (uint *) DECODE_STATUS_CHIP;
-
+static volatile uint   *const rx_packets_status  = (uint *) RX_PACKETS_STATUS;
 
 sdp_msg_t my_msg;
 
@@ -80,16 +82,21 @@ sdram_rx_t data;
 // Spinnaker function prototypes
 void router_setup(void);
 void allocate_memory(void);
-void gen_random_data(uint trial_num);
+void gen_random_data(void);
 void encode_decode(uint none1, uint none2);
 void store_packets(uint key, uint payload);
 void report_status(uint ticks, uint null);
-void report_rx_packets(uint none1, uint none2);
+void decode_rx_packets(uint none1, uint none2);
 void app_done();
 void sdp_init();
 char *itoa(uint n);
 char *ftoa(float num, int precision);
 int  count_chars(char *str);
+void check_data(void);
+
+// Fault testing
+void drop_packet(uint chip, uint link, uint packet_num);
+void modify_packet(uint chip, uint link, uint packet_num, uint packet_value);
 
 void send_msg(char *s, uint s_len);
 int frac(float num, uint precision);
@@ -100,8 +107,6 @@ void tx_packets(void);
 
 int c_main(void)
 {
-  uint trial_num;
-
   // Get core and chip IDs
   coreID = spin1_get_core_id();
   chipID = spin1_get_chip_id();
@@ -136,19 +141,10 @@ int c_main(void)
   // Allocate SDRAM memory for the original, encoded and decoded arrays
   allocate_memory();
 
-  trial_num = 0;
-//  while(trial_num<=1)
-//  {
-    // Generate the random data for encoding/decoding and trasmitting to the
-    // neighbouring chips
-  gen_random_data(trial_num); // *** Pass the trial number to change the random numbers on each trial ***
+  gen_random_data(); // *** Pass the trial number to change the random numbers on each trial ***
 
   // Go
   spin1_start(SYNC_WAIT);
-
-    // Increment trial number
-//    trial_num++;
-//  }
 
   // report results
   app_done();
@@ -166,7 +162,7 @@ void router_setup(void)
     
   if (coreID==1) // core 1 of any chip
   {
-    e = rtr_alloc(12);
+    e = rtr_alloc(13);
     if (!e)
       rt_error(RTE_ABORT);
 
@@ -180,13 +176,15 @@ void router_setup(void)
     rtr_mc_set(e+5,  (chipID<<8)+SWEST, MASK_ALL, SW_LINK);
 
     // Set up chip routes
-    //         entry key                        mask      route             
+    //         entry key                          mask      route             
     rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
     rtr_mc_set(e+7,  ((chipID-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
     rtr_mc_set(e+8,  ((chipID+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
     rtr_mc_set(e+9,  ((chipID-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
     rtr_mc_set(e+10, ((chipID+x1+y1)<<8) + SWEST, MASK_ALL, CORE11); // from SW
     rtr_mc_set(e+11, ((chipID-x1-y1)<<8) + NEAST, MASK_ALL, CORE12); // from NE
+
+    rtr_mc_set(e+12, 0, 0, 0); // from NE
   }
 
   /* ------------------------------------------------------------------- */
@@ -205,9 +203,13 @@ void allocate_memory(void)
   //char str[100];
 
   // Transmit and receive chips memory allocation
+
+  // Allocate memory for TX chips
   if (coreID>=1 && coreID<=CHIPS_TX_N)
   {
     finish[coreID-1] = 0;
+    decode_status_chip[coreID-1] = 0;
+    rx_packets_status[coreID-1] = 0;
 
     // Welcome message
     io_printf (IO_DEF, "[chip (%d,%d) core %d] LZSS Encode/Decode Test\n", chipID>>8, chipID&255, coreID);
@@ -248,23 +250,32 @@ void allocate_memory(void)
   }
 
   // Allocate memory for RX chips
-
   if(coreID>=CHIPS_TX_N+1 && coreID<=CHIPS_TX_N+CHIPS_RX_N)
   {
-    if (!(data.buffer   = (unsigned char *)sark_xalloc (sv->sdram_heap, (SDRAM_BUFFER+SDRAM_BUFFER_X)*sizeof(char), 0, ALLOC_LOCK)))
+    if (!(data.buffer   = (unsigned char *)sark_xalloc (sv->sdram_heap, (SDRAM_BUFFER+SDRAM_BUFFER_X+8)*sizeof(char), 0, ALLOC_LOCK)))
     {
       io_printf(IO_DEF, "Unable to allocate memory (Rx)!\n");
       rt_error(RTE_ABORT);
     }
     //Initialize buffer
-    for(i=0; i<SDRAM_BUFFER+SDRAM_BUFFER_X; i++)
+    for(i=0; i<SDRAM_BUFFER+SDRAM_BUFFER_X+8; i++)
       data.buffer[i] = 0;
+
+    // Decompressed array
+    if (!(data_dec.buffer = (unsigned char *)sark_xalloc (sv->sdram_heap, SDRAM_BUFFER*sizeof(char), 0, ALLOC_LOCK)))
+    {
+      io_printf(IO_DEF, "Unable to allocate memory (Dec)!\n");
+      rt_error(RTE_ABORT);
+    }
+    //Initialize buffer
+    for(i=0; i<SDRAM_BUFFER; i++)
+      data_dec.buffer[i] = 0;
   }
 
 }
 
 // Generate the random data array for the transmit chips
-void gen_random_data(uint trial_num)
+void gen_random_data(void)
 {
   if (coreID>=1 && coreID<=CHIPS_TX_N)
   {
@@ -315,10 +326,12 @@ void encode_decode(uint none1, uint none2)
       io_printf(IO_DEF, "\n[chip (%d,%d) core %d] Decoding...\n", chipID>>8, chipID&255, coreID);
       decode();
 
+      check_data();
+
       finish[coreID-1] = 1;
 
       // Transmit packets
-      //tx_packets();
+      tx_packets();
 
     }
   }
@@ -333,12 +346,14 @@ void tx_packets(void)
 {
   int i, num, shift;
 
+  //spin1_delay_us((chipID+coreID)*10);
+
   shift = 0;
   for (i=0; i<4; i++)
   {
     num = (data_orig.size>>shift) & 255;
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-    spin1_delay_us(5);
+    spin1_delay_us(1);
     shift+=8;
   }
 
@@ -347,20 +362,20 @@ void tx_packets(void)
   {
     num = (data_enc.size>>shift) & 255;
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-    spin1_delay_us(5);
+    spin1_delay_us(1);
     shift+=8;
   }
 
   for(i=0; i<data_orig.size; i++)
   {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
-    spin1_delay_us(5);
+    spin1_delay_us(1);
   }
 
   for(i=0; i<data_enc.size; i++)
   {
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
-    spin1_delay_us(5);
+    spin1_delay_us(1);
   }
   while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
 }
@@ -371,7 +386,7 @@ void store_packets(uint key, uint payload)
   if (payload!=0xffffffff)
     data.buffer[packets++] = payload;
   else
-    spin1_schedule_callback(report_rx_packets, 0, 0, 2);
+    spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
 }
 
 // Send SDP packet to host (for reporting purposes)
@@ -407,7 +422,7 @@ void sdp_init()
   my_msg.srce_addr = spin1_get_chip_id ();  // Source addr
 }
 
-void report_rx_packets(uint none1, uint none2)
+void decode_rx_packets(uint none1, uint none2)
 {
   int s_len;
   static int trial_num=0;
@@ -423,20 +438,52 @@ void report_rx_packets(uint none1, uint none2)
     io_printf(IO_DEF, "Packets received (total): %d (%d)\n", packets-8, packets);
     if (packets-8 != data.orig_size+data.enc_size)
     {
-      io_printf(IO_DEF, "* ERROR! Packets received do not match number of expected packages!\n");
+      rx_packets_status[coreID-7] = 2;
+
+      io_printf(IO_DEF, "* ERROR! Rx packets != Expected packets!\n");
 
       strcpy(s, "ERROR! Trial: ");
       strcat(s, itoa(trial_num+1));
-      strcat(s, " Packets received (");
+      strcat(s, " Rx packets (");
       strcat(s, itoa(packets-8));
-      strcat(s, ") do not match number of expected packets (");
+      strcat(s, ") != Expected packets (");
       strcat(s, itoa(data.orig_size+data.enc_size));
-      strcat(s, ")!\n");
+      strcat(s, ")!");
       s_len = count_chars(s);
       send_msg(s, s_len);
     }
     else
-      io_printf(IO_DEF, "Packets received match number of expected packages!\n");
+    {
+      rx_packets_status[coreID-7] = 1;
+      data_orig.size   = data.orig_size;
+      data_orig.buffer = data.buffer + 8;
+      
+      data_enc.size   = data.enc_size;
+      data_enc.buffer = data.buffer + data.orig_size + 8;
+
+      decode();
+
+      check_data();
+
+/*      io_printf(IO_DEF, "Orig/Enc\n");
+      for(int i=0; i<data.orig_size+data.enc_size+8; i++)
+        io_printf(IO_DEF, "%2d: %d\n", i, data.buffer[i]);
+*/
+/*
+      io_printf(IO_DEF, "Original array (%d)\n", data_orig.size);
+      for(int i=0; i<data_orig.size; i++)
+        io_printf(IO_DEF, "%2d: %d\n", i, data_orig.buffer[i]);
+
+      io_printf(IO_DEF, "Encoded array (%d)\n", data_enc.size);
+      for(int i=0; i<data_enc.size; i++)
+        io_printf(IO_DEF, "%2d: %d\n", i, data_enc.buffer[i]);
+
+      io_printf(IO_DEF, "Decoded array (%d)\n", data_dec.size);
+      for(int i=0; i<data_dec.size; i++)
+        io_printf(IO_DEF, "%2d: %d\n", i, data_dec.buffer[i]);
+*/
+      io_printf(IO_DEF, "Rx packets = Exp packets!\n");
+    }
 
     trial_num++;
     packets = 0;
@@ -452,36 +499,38 @@ void report_status(uint ticks, uint null)
   int progress_sum=0;
 
   if (chipIDx==0 && chipIDy==0 && coreID==13 && (ticks % (NUMBER_OF_XCHIPS * NUMBER_OF_YCHIPS))==chipNum )
+  {
+    for(i=0; i<6; i++)
+      progress_sum+=info->progress[i];
+
+    if (tmp!=progress_sum)
     {
-      for(i=0; i<6; i++)
-        progress_sum+=info->progress[i];
+      strcpy(s, "Trial: ");
+      strcat(s, itoa(info->trial[0]));
 
-      if (tmp!=progress_sum)
-      {
-        strcpy(s, "Trial: ");
-        strcat(s, itoa(info->trial[0]));
+      strcat(s, " Progress: ");
+      strcat(s, itoa(progress_sum/6));
+      strcat(s, "%% ");
 
-        strcat(s, " Progress: ");
-        strcat(s, itoa(progress_sum/6));
-        strcat(s, "%% ");
+      s_len = count_chars(s);
+      send_msg(s, s_len);
 
-        s_len = count_chars(s);
-        send_msg(s, s_len);
-
-        tmp = progress_sum;
-      }
+      tmp = progress_sum;
     }
+  }
 
   //decode_status_chip[coreID-1] = decode_status;
 
   // send results to host
   // only the lead application core does this
-  if (coreID==1 && finish_tmp==DECODE_ST_SIZE && !done)
+  // Spread out the reporting to avoid SDP packet drop
+  if (coreID==13 && !done && (ticks % (NUMBER_OF_XCHIPS * NUMBER_OF_YCHIPS)) == chipNum)
   {
-    // Spread out the reporting to avoid SDP packet drop
-    if ((ticks % (NUMBER_OF_XCHIPS * NUMBER_OF_YCHIPS)) == chipNum)
-    {
+    for(i=0; i<DECODE_ST_SIZE; i++)
+      finish_tmp+=decode_status_chip[i];
 
+    if (finish_tmp==DECODE_ST_SIZE)
+    {
       strcpy(s, "Status: ");
       for(i=0; i<DECODE_ST_SIZE; i++)
       {
@@ -494,9 +543,9 @@ void report_status(uint ticks, uint null)
 
       // Send SDP message
       send_msg(s, s_len);
-
-      done = 1;
     }
+
+    done = 1;
   }
 
 // Exit
@@ -690,8 +739,6 @@ inline void putbit1(void)
 void decode(void)
 {
   int i, j, k, r, c;
-  int err=0, tmp, s_len;
-  char s[80];
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
   io_printf(IO_DEF, "Time: %s s\n", ftoa(t,1));
@@ -747,6 +794,13 @@ void decode(void)
   }
 
   data_dec.size = textcount;
+}
+
+void check_data(void)
+{
+  int i, err = 0;
+  int tmp, s_len;
+  char s[80];
 
   // *** Put this decode checking in a separate function ***
   #ifdef DEBUG
@@ -800,7 +854,19 @@ void decode(void)
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoded array:  %d bytes\n", chipID>>8, chipID&255, coreID, data_enc.size);
   io_printf(IO_DEF, "[chip (%d,%d) core %d] Decoded array:  %d bytes\n", chipID>>8, chipID&255, coreID, data_dec.size);
   io_printf(IO_DEF, "Total time elapsed: %s s\n", ftoa(t,1));
+}  
+
+// Fault testing
+void drop_packet(uint chip, uint link, uint packet_num)
+{
+
 }
+
+void modify_packet(uint chip, uint link, uint packet_num, uint packet_value)
+{
+
+}
+
 
 inline int getbit(int n) /* get n bits */
 {
