@@ -454,6 +454,7 @@ void store_packets(uint key, uint payload)
   else
     spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
 
+
 /*
   if (payload!=0xffffffff || payload!=0xefffffff)
     data.buffer[packets++] = payload;
