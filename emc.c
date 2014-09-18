@@ -9,9 +9,12 @@
 
 #define abs(x) ((x)<0 ? -(x) : (x))
 
+#define BOARDX 12
+#define BOARDY 12
+
 #define TIMER_TICK_PERIOD  5000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       2000000
+#define SDRAM_BUFFER       10000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        1000000
@@ -22,7 +25,7 @@
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
 #define TRIALS             2
-#define TX_REPS            10
+#define TX_REPS            1
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)               // size: 12 ints ( 0..11)
@@ -30,9 +33,10 @@
 #define RX_PACKETS_STATUS  (SPINN_SDRAM_BASE + 18*sizeof(uint)) // size: 6 ints  (18..23)
 #define CHIP_INFO          (SPINN_SDRAM_BASE + 24*sizeof(uint)) // size: 24 ints (24..47)
 
-uint packets    = 0;
-uint bit_buffer = 0;
-uint bit_mask   = 128;
+uint packets     = 0;
+uint bit_buffer  = 0;
+uint bit_mask    = 128;
+uint decode_done = 0;
 uint codecount;
 uint textcount;
 uint buffer[N*2];
@@ -93,6 +97,7 @@ char *itoa(uint n);
 char *ftoa(float num, int precision);
 int  count_chars(char *str);
 void check_data(void);
+int mod(int x, int m);
 
 // Fault testing
 void drop_packet(uint chip, uint link, uint packet_num);
@@ -162,12 +167,13 @@ void router_setup(void)
     
   if (coreID==1) // core 1 of any chip
   {
-    e = rtr_alloc(13);
+    e = rtr_alloc(12);
     if (!e)
       rt_error(RTE_ABORT);
 
+    ////////////////////////////////////////////////////
     // Set up external links
-    //         entry key             mask      route             
+    //         entry key                mask      route             
     rtr_mc_set(e,    (chipID<<8)+NORTH, MASK_ALL, N_LINK);
     rtr_mc_set(e+1,  (chipID<<8)+SOUTH, MASK_ALL, S_LINK);
     rtr_mc_set(e+2,  (chipID<<8)+EAST,  MASK_ALL, E_LINK);
@@ -177,14 +183,46 @@ void router_setup(void)
 
     // Set up chip routes
     //         entry key                          mask      route             
-    rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
+/*    rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
     rtr_mc_set(e+7,  ((chipID-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
     rtr_mc_set(e+8,  ((chipID+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
     rtr_mc_set(e+9,  ((chipID-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
     rtr_mc_set(e+10, ((chipID+x1+y1)<<8) + SWEST, MASK_ALL, CORE11); // from SW
     rtr_mc_set(e+11, ((chipID-x1-y1)<<8) + NEAST, MASK_ALL, CORE12); // from NE
+*/
 
-    rtr_mc_set(e+12, 0, 0, 0); // from NE
+    // Set up chip routes
+    //         entry key                                                                  mask      route             
+    rtr_mc_set(e+6,  (((chipIDx<<8) + mod(chipIDy+1, BOARDY))<<8)                + SOUTH, MASK_ALL, CORE9);  // from S  9
+    rtr_mc_set(e+7,  (((chipIDx<<8) + mod(chipIDy-1, BOARDY))<<8)                + NORTH, MASK_ALL, CORE12); // from N  12
+    rtr_mc_set(e+8,  (((mod(chipIDx+1, BOARDX)<<8) + chipIDy)<<8)                + WEST,  MASK_ALL, CORE7);  // from W  7
+    rtr_mc_set(e+9,  (((mod(chipIDx-1, BOARDX)<<8) + chipIDy)<<8)                + EAST,  MASK_ALL, CORE10); // from E  10
+    rtr_mc_set(e+10, (((mod(chipIDx+1, BOARDX)<<8) + mod(chipIDy+1, BOARDY))<<8) + SWEST, MASK_ALL, CORE8);  // from SW 8
+    rtr_mc_set(e+11, (((mod(chipIDx-1, BOARDX)<<8) + mod(chipIDy-1, BOARDY))<<8) + NEAST, MASK_ALL, CORE11); // from NE 11
+
+    //////////////////////////////////////////////////////
+    // Set up external links for the decoding 'DONE' message
+    //         entry key                mask      route             
+/*    rtr_mc_set(e+12,  (chipID<<8)+NORTH+6, MASK_ALL, N_LINK);
+    rtr_mc_set(e+13,  (chipID<<8)+SOUTH+6, MASK_ALL, S_LINK);
+    rtr_mc_set(e+14,  (chipID<<8)+EAST +6, MASK_ALL, E_LINK);
+    rtr_mc_set(e+15,  (chipID<<8)+WEST +6, MASK_ALL, W_LINK);
+    rtr_mc_set(e+16,  (chipID<<8)+NEAST+6, MASK_ALL, NE_LINK);
+    rtr_mc_set(e+17,  (chipID<<8)+SWEST+6, MASK_ALL, SW_LINK);
+
+    // Set up chip routes
+    //         entry key                                                                      mask      route             
+    rtr_mc_set(e+18, (((chipIDx<<8) + mod(chipIDy+1, BOARDY))<<8)                + SOUTH + 6, MASK_ALL, CORE3); // from S
+    rtr_mc_set(e+19, (((chipIDx<<8) + mod(chipIDy-1, BOARDY))<<8)                + NORTH + 6, MASK_ALL, CORE6); // from N
+    rtr_mc_set(e+20, (((mod(chipIDx+1, BOARDX)<<8) + chipIDy)<<8)                + WEST  + 6, MASK_ALL, CORE1); // from W
+    rtr_mc_set(e+21, (((mod(chipIDx-1, BOARDX)<<8) + chipIDy)<<8)                + EAST  + 6, MASK_ALL, CORE4); // from E
+    rtr_mc_set(e+22, (((mod(chipIDx+1, BOARDX)<<8) + mod(chipIDy+1, BOARDY))<<8) + SWEST + 6, MASK_ALL, CORE2); // from SW
+    rtr_mc_set(e+23, (((mod(chipIDx-1, BOARDX)<<8) + mod(chipIDy-1, BOARDY))<<8) + NEAST + 6, MASK_ALL, CORE5); // from NE
+*/
+    // No longer needed
+    // Drop all packets which don't have routes (used to drop packets which
+    // wraparound for 3-board and 24-board machines and don't have proper routes configures)
+    //rtr_mc_set(e+12, 0, 0, 0);
   }
 
   /* ------------------------------------------------------------------- */
@@ -194,6 +232,20 @@ void router_setup(void)
 
 }
 
+// Alternative mod function which wraps around in case of negative numbers
+// Eg. in case of mod 3
+// mod(-3,3) = 0
+// mod(-2,3) = 1
+// mod(-1,3) = 2
+// mod( 0,3) = 0
+// mod( 1,3) = 1
+// mod( 2,3) = 2
+// mod( 3,3) = 0
+// mod( 4,3) = 1
+int mod(int x, int m)
+{
+    return (x%m + m)%m;
+}
 
 // Allocate the SDRAM memory for the transmit as well as the receive chips
 void allocate_memory(void)
@@ -299,7 +351,7 @@ void gen_random_data(void)
 // that the output array is bigger than the input array by approximately 12%
 void encode_decode(uint none1, uint none2)
 {
-  int i;
+  int i, j;
   //int err=0;
   //char str[100];
 
@@ -330,8 +382,21 @@ void encode_decode(uint none1, uint none2)
 
       finish[coreID-1] = 1;
 
-      // Transmit packets
       tx_packets();
+
+/*      
+      // Transmit packets TX_REPS times
+      decode_done = 0;
+      for(j=0; j<TX_REPS; j++)
+      {
+        io_printf(IO_DEF, "TX Rep: %d\n", j+1);
+        if (TX_REPS==1)
+          tx_packets();
+
+        //while(!decode_done);
+        //  decode_done = 0;
+      }
+*/
 
     }
   }
@@ -383,10 +448,20 @@ void tx_packets(void)
 // Count the packets received
 void store_packets(uint key, uint payload)
 {
+
   if (payload!=0xffffffff)
     data.buffer[packets++] = payload;
   else
     spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
+
+/*
+  if (payload!=0xffffffff || payload!=0xefffffff)
+    data.buffer[packets++] = payload;
+  else if (payload!=0xefffffff)
+    spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
+  else
+    decode_done = 1;
+*/
 }
 
 // Send SDP packet to host (for reporting purposes)
@@ -465,6 +540,9 @@ void decode_rx_packets(uint none1, uint none2)
 
       check_data();
 
+      // Decoding done
+      //while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xefffffff, WITH_PAYLOAD));
+
 /*      io_printf(IO_DEF, "Orig/Enc\n");
       for(int i=0; i<data.orig_size+data.enc_size+8; i++)
         io_printf(IO_DEF, "%2d: %d\n", i, data.buffer[i]);
@@ -542,7 +620,7 @@ void report_status(uint ticks, uint null)
       s_len = count_chars(s);
 
       // Send SDP message
-      send_msg(s, s_len);
+      //send_msg(s, s_len);
     }
 
     done = 1;
