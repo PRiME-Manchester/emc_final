@@ -14,7 +14,7 @@
 
 #define TIMER_TICK_PERIOD  5000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       10000
+#define SDRAM_BUFFER       1000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        1000000
@@ -24,7 +24,7 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
-#define TRIALS             2
+#define TRIALS             60
 #define TX_REPS            1
 
 // Address values
@@ -167,7 +167,7 @@ void router_setup(void)
     
   if (coreID==1) // core 1 of any chip
   {
-    e = rtr_alloc(12);
+    e = rtr_alloc(24);
     if (!e)
       rt_error(RTE_ABORT);
 
@@ -180,10 +180,10 @@ void router_setup(void)
     rtr_mc_set(e+3,  (chipID<<8)+WEST,  MASK_ALL, W_LINK);
     rtr_mc_set(e+4,  (chipID<<8)+NEAST, MASK_ALL, NE_LINK);
     rtr_mc_set(e+5,  (chipID<<8)+SWEST, MASK_ALL, SW_LINK);
-
+/*
     // Set up chip routes
     //         entry key                          mask      route             
-/*    rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
+    rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
     rtr_mc_set(e+7,  ((chipID-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
     rtr_mc_set(e+8,  ((chipID+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
     rtr_mc_set(e+9,  ((chipID-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
@@ -203,7 +203,7 @@ void router_setup(void)
     //////////////////////////////////////////////////////
     // Set up external links for the decoding 'DONE' message
     //         entry key                mask      route             
-/*    rtr_mc_set(e+12,  (chipID<<8)+NORTH+6, MASK_ALL, N_LINK);
+    rtr_mc_set(e+12,  (chipID<<8)+NORTH+6, MASK_ALL, N_LINK);
     rtr_mc_set(e+13,  (chipID<<8)+SOUTH+6, MASK_ALL, S_LINK);
     rtr_mc_set(e+14,  (chipID<<8)+EAST +6, MASK_ALL, E_LINK);
     rtr_mc_set(e+15,  (chipID<<8)+WEST +6, MASK_ALL, W_LINK);
@@ -218,7 +218,7 @@ void router_setup(void)
     rtr_mc_set(e+21, (((mod(chipIDx-1, BOARDX)<<8) + chipIDy)<<8)                + EAST  + 6, MASK_ALL, CORE4); // from E
     rtr_mc_set(e+22, (((mod(chipIDx+1, BOARDX)<<8) + mod(chipIDy+1, BOARDY))<<8) + SWEST + 6, MASK_ALL, CORE2); // from SW
     rtr_mc_set(e+23, (((mod(chipIDx-1, BOARDX)<<8) + mod(chipIDy-1, BOARDY))<<8) + NEAST + 6, MASK_ALL, CORE5); // from NE
-*/
+    
     // No longer needed
     // Drop all packets which don't have routes (used to drop packets which
     // wraparound for 3-board and 24-board machines and don't have proper routes configures)
@@ -351,9 +351,9 @@ void gen_random_data(void)
 // that the output array is bigger than the input array by approximately 12%
 void encode_decode(uint none1, uint none2)
 {
-  int i, j;
+  int i, j, s_len;
   //int err=0;
-  //char str[100];
+  char s[100];
 
   for(i=0; i<TRIALS; i++)
   {
@@ -382,19 +382,60 @@ void encode_decode(uint none1, uint none2)
 
       finish[coreID-1] = 1;
 
-      tx_packets();
+      for(j=0; j<10; j++)
+      {
+        io_printf(IO_DEF, "Transmitting packets (Rep %d) ...\n", j+1);
 
-/*      
-      // Transmit packets TX_REPS times
-      decode_done = 0;
-      for(j=0; j<TX_REPS; j++)
+        if (chipID==1 && coreID==1)
+        {
+          t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
+          strcpy(s, "Time: ");
+          strcat(s, ftoa(t,1));
+          strcat(s, "s. Transmitting packets (rep ");
+          strcat(s, itoa(j+1));
+          strcat(s, ") ...");
+          s_len = count_chars(s);
+          send_msg(s, s_len);
+        }
+        tx_packets();
+
+        // Transmit packets TX_REPS times
+        decode_done = 0;
+        io_printf(IO_DEF, "Waiting for decode to finish\n");
+        if (chipID==1 && coreID==1)
+        {
+          t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
+          strcpy(s, "Time: ");
+          strcat(s, ftoa(t,1));
+          strcat(s, "s. Waiting for decode to finish");
+          s_len = count_chars(s);
+          send_msg(s, s_len);
+        }
+
+        // Wait for decode_done signal
+        while(!decode_done);
+        io_printf(IO_DEF, "Decode done received\n");
+        if (chipID==1 && coreID==1)
+        {
+          t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
+          strcpy(s, "Time: ");
+          strcat(s, ftoa(t,1));
+          strcat(s, "s. Decode done received");
+          s_len = count_chars(s);
+          send_msg(s, s_len);
+        }
+
+        decode_done = 0;
+      } 
+      
+/*      for(j=0; j<TX_REPS; j++)
       {
         io_printf(IO_DEF, "TX Rep: %d\n", j+1);
         if (TX_REPS==1)
           tx_packets();
 
-        //while(!decode_done);
-        //  decode_done = 0;
+        while(!decode_done);
+        decode_done = 0;
       }
 */
 
@@ -448,21 +489,19 @@ void tx_packets(void)
 // Count the packets received
 void store_packets(uint key, uint payload)
 {
-
+/*
   if (payload!=0xffffffff)
     data.buffer[packets++] = payload;
   else
     spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
-
-
-/*
-  if (payload!=0xffffffff || payload!=0xefffffff)
-    data.buffer[packets++] = payload;
-  else if (payload!=0xefffffff)
-    spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
-  else
-    decode_done = 1;
 */
+  if (payload==0xffffffff)
+    spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
+  else if (payload==0xefffffff)
+    decode_done = 1;
+  else
+    data.buffer[packets++] = payload;
+
 }
 
 // Send SDP packet to host (for reporting purposes)
@@ -542,7 +581,7 @@ void decode_rx_packets(uint none1, uint none2)
       check_data();
 
       // Decoding done
-      //while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xefffffff, WITH_PAYLOAD));
+      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xefffffff, WITH_PAYLOAD));
 
 /*      io_printf(IO_DEF, "Orig/Enc\n");
       for(int i=0; i<data.orig_size+data.enc_size+8; i++)
@@ -572,6 +611,7 @@ void decode_rx_packets(uint none1, uint none2)
 void report_status(uint ticks, uint null)
 {
   uint i, s_len, finish_tmp=0;
+  int t;
   char s[100];
   static int done = 0;
   static int tmp = -1;
@@ -584,13 +624,16 @@ void report_status(uint ticks, uint null)
 
     if (tmp!=progress_sum)
     {
+      t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
+      
       strcpy(s, "Trial: ");
       strcat(s, itoa(info->trial[0]));
 
       strcat(s, " Progress: ");
       strcat(s, itoa(progress_sum/6));
-      strcat(s, "%% ");
-
+      strcat(s, "%% Time: ");
+      strcat(s, ftoa(t,1));
+      strcat(s, "s");
       s_len = count_chars(s);
       send_msg(s, s_len);
 
@@ -916,7 +959,7 @@ void check_data(void)
     io_printf(IO_DEF, "[chip (%d,%d) core %d] ERROR! Original and Decoded Outputs do not match!!!\n", chipID>>8, chipID&255, coreID);
 
     // Send SDP message
-    strcpy(s, "ERROR! Original and Decoded Outputs do not match!!!\n");
+    strcpy(s, "ERROR! Original and Decoded Outputs do not match!!!");
     s_len = count_chars(s);
     send_msg(s, s_len);
 
