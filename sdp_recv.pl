@@ -59,6 +59,10 @@ sub main
     	my $rc = $spin->recv_sdp (timeout => $timeout, debug => 4);
 
         if ($rc) {
+            #Replace any %% with %. Seems like not all % were %%
+            $rc =~ s/%%/%/g;
+            #Replace all % with %%
+            $rc =~ s/%/%%/g;
             printf MYFILE $i.' '.$rc;
             printf $i.' '.$rc;
             $i++;

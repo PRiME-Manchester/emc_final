@@ -12,19 +12,21 @@
 #define BOARDX 12
 #define BOARDY 12
 
-#define TIMER_TICK_PERIOD  5000 // 10ms
+#define TIMER_TICK_PERIOD  10000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       1000000
+#define SDRAM_BUFFER       10000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
-#define PACKETS_NUM        1000000
-#define NUMBER_OF_CHIPS    48
-#define NUMBER_OF_XCHIPS   8
-#define NUMBER_OF_YCHIPS   8
+#define PACKETS_NUM        100000
+#define NUMBER_OF_CHIPS    144
+#define NUMBER_OF_XCHIPS   12
+#define NUMBER_OF_YCHIPS   12
+#define NUMBER_OF_XCHIPS_BOARD 8
+#define NUMBER_OF_YCHIPS_BOARD 8
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
-#define TRIALS             60
+#define TRIALS             1
 #define TX_REPS            1
 
 // Address values
@@ -42,8 +44,9 @@ uint textcount;
 uint buffer[N*2];
 
 uint coreID;
-uint chipID;
+uint chipID, chipBoardID, ethBoardID;
 uint chipIDx, chipIDy, chipNum;
+uint chipBoardIDx, chipBoardIDy, chipBoardNum;
 uint decode_status=0;
 
 float t;
@@ -98,6 +101,8 @@ char *ftoa(float num, int precision);
 int  count_chars(char *str);
 void check_data(void);
 int mod(int x, int m);
+uint spin1_get_chip_board_id();
+uint spin1_get_eth_board_id();
 
 // Fault testing
 void drop_packet(uint chip, uint link, uint packet_num);
@@ -115,11 +120,21 @@ int c_main(void)
   // Get core and chip IDs
   coreID = spin1_get_core_id();
   chipID = spin1_get_chip_id();
+  chipBoardID = spin1_get_chip_board_id();
+  ethBoardID  = spin1_get_eth_board_id();
 
+  io_printf(IO_DEF, "eth_boardID  = (%d,%d)\n", ethBoardID>>8,  ethBoardID&255);
+  
   // get this chip's coordinates for core map
   chipIDx = chipID>>8;
   chipIDy = chipID&255;
-  chipNum = (chipIDx * NUMBER_OF_YCHIPS) + chipIDy;
+  chipNum = (chipIDy * NUMBER_OF_YCHIPS) + chipIDx;
+
+  chipBoardIDx = chipBoardID>>8;
+  chipBoardIDy = chipBoardID&255;
+  chipBoardNum = (chipBoardIDy * NUMBER_OF_YCHIPS_BOARD) + chipBoardIDx;
+  io_printf(IO_DEF, "chipID (%d,%d), chipID %d\n", chipIDx, chipIDy, chipNum);
+  io_printf(IO_DEF, "chip_boardID (%d,%d), chipBoardNum %d\n", chipBoardIDx, chipBoardIDy, chipBoardNum);
 
   // initialise SDP message buffer
   sdp_init();
@@ -132,7 +147,7 @@ int c_main(void)
   spin1_callback_on(MCPL_PACKET_RECEIVED, store_packets, -1);
 
   // Timer callback which reports status to the host
-  spin1_callback_on(TIMER_TICK, report_status, 1);
+  //spin1_callback_on(TIMER_TICK, report_status, 1);
 
   // Encode and decode the previously generated random data and store in SDRAM
   spin1_schedule_callback(encode_decode, 0, 0, 2);
@@ -228,7 +243,7 @@ void router_setup(void)
   /* ------------------------------------------------------------------- */
   /* initialize the application processor resources                      */
   /* ------------------------------------------------------------------- */
-  io_printf (IO_BUF, "[Core %d] -- Routes configured\n", coreID);
+  io_printf (IO_BUF, "Routes configured\n", coreID);
 
 }
 
@@ -264,7 +279,7 @@ void allocate_memory(void)
     rx_packets_status[coreID-1] = 0;
 
     // Welcome message
-    io_printf (IO_DEF, "[chip (%d,%d) core %d] LZSS Encode/Decode Test\n", chipID>>8, chipID&255, coreID);
+    io_printf (IO_DEF, "LZSS Encode/Decode Test\n");
 
     /*******************************************************/
     /* Allocate memory                                     */
@@ -351,15 +366,29 @@ void gen_random_data(void)
 // that the output array is bigger than the input array by approximately 12%
 void encode_decode(uint none1, uint none2)
 {
-  int i, j, s_len;
+  // From sark_io.c (make this an extern??)
+  typedef struct iobuf
+  {
+    struct iobuf *next;
+    uint unix_time;
+    uint time_ms;
+    uint ptr;
+    uchar buf[];
+  } iobuf_t;
+
+  int i, j, k, s_len, cr;
+  int t1, t_e;
+  int vbase, vsize; //size
+  vcpu_t *vcpu;
+  iobuf_t *iobuf;
   //int err=0;
-  char s[100];
+  char *s, *s_tmp;
 
   for(i=0; i<TRIALS; i++)
   {
     if (coreID>=1 && coreID<=DECODE_ST_SIZE)
     {
-      io_printf(IO_DEF, "\nTrial: %d\n", i+1);
+      io_printf(IO_DEF, "Trial: %d\n", i+1);
       
       //All chips
       info->trial[coreID-1] = i+1;
@@ -369,20 +398,83 @@ void encode_decode(uint none1, uint none2)
       /*******************************************************/
       /* Encode array                                        */
       /*******************************************************/
-      io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoding...\n", chipID>>8, chipID&255, coreID);
+      io_printf(IO_DEF, "Encoding...\n");
       encode();
 
       /*******************************************************/
       /* Decode array (locally)                              */
       /*******************************************************/
-      io_printf(IO_DEF, "\n[chip (%d,%d) core %d] Decoding...\n", chipID>>8, chipID&255, coreID);
+      io_printf(IO_DEF, "\nDecoding...\n");
       decode();
 
       check_data();
 
+      ////////////////////////////////////////
+      // Send IO_BUF to host
+      // Stagger output so no conflicts arise
+      // Wait for turn to send data to host to avoid conflicts
+      if (coreID==1 && chipIDx==3 && chipIDy==0)
+      {
+        while ((spin1_get_simulation_time() % (NUMBER_OF_XCHIPS_BOARD * NUMBER_OF_YCHIPS_BOARD))
+                  != chipBoardNum);
+        io_printf(IO_DEF, "Ticks: %d\n", spin1_get_simulation_time());
+
+        // *io_buf Points to SDRAM buffer
+        vbase = (int)sv->vcpu_base;
+        //size  = (int)(sv->iobuf_size);
+        vsize = sizeof(*sv->vcpu_base);
+
+        vcpu  = (vcpu_t *)(vbase + vsize*coreID);
+        iobuf = (iobuf_t *)vcpu->iobuf;
+        
+        t1 = spin1_get_simulation_time();
+
+        while (iobuf!=NULL)
+        {
+          s     = iobuf->buf;
+          s_len = iobuf->ptr;
+          //io_printf(IO_DEF, "String length = %d\n", iobuf->ptr);
+/*
+          for(j=0; j<s_len/128; j++)
+          {
+            send_msg(s, 128);
+            s+=128;
+          }
+          send_msg(s, s_len - 128*(int)(s_len/128));
+*/
+          while(s_len)
+          {
+            cr=0;
+            while(s[cr++]!='\n');
+//              s_len--;
+            send_msg(s, cr-1);
+            s+=cr;
+            s_len-=cr;
+            //io_printf(IO_DEF, "s_len: %d\n", s_len);
+          }
+
+          iobuf = iobuf->next;
+        }
+
+        t_e = spin1_get_simulation_time() - t1;
+        io_printf(IO_DEF, "t_e (ticks) = %d\n", t_e);
+      }
+/*
+      while(!iobuf)
+      {
+        s = iobuf->ptr;
+        s_len = count_chars(s);
+        send_msg(s,s_len);
+
+        iobuf = iobuf->next;
+      }
+*/
+      ////////////////////////////////////////
+
       finish[coreID-1] = 1;
 
-      for(j=0; j<10; j++)
+/*
+      for(j=0; j<TX_REPS; j++)
       {
         io_printf(IO_DEF, "Transmitting packets (Rep %d) ...\n", j+1);
 
@@ -427,7 +519,8 @@ void encode_decode(uint none1, uint none2)
 
         decode_done = 0;
       } 
-      
+*/
+
 /*      for(j=0; j<TX_REPS; j++)
       {
         io_printf(IO_DEF, "TX Rep: %d\n", j+1);
@@ -530,7 +623,7 @@ void sdp_init()
 {
   my_msg.tag       = 1;             // IPTag 1
   my_msg.dest_port = PORT_ETH;      // Ethernet
-  my_msg.dest_addr = sv->dbg_addr;  // Root chip
+  my_msg.dest_addr = sv->eth_addr;  // Eth connected chip on this board
 
   my_msg.flags     = 0x07;          // Flags = 7
   my_msg.srce_port = spin1_get_core_id ();  // Source port
@@ -764,8 +857,7 @@ void encode(void)
         {  
           t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
           
-          io_printf(IO_DEF, "[chip (%d,%d) core %d] %d%% Time: %s s\n",
-                      chipID>>8, chipID&255, coreID, progress, ftoa(t,1));
+          io_printf(IO_DEF, "%d%% Time: %s s\n", progress, ftoa(t,1));
 
           info->progress[coreID-1] = progress;
 
@@ -779,8 +871,8 @@ void encode(void)
   flush_bit_buffer();
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
-  io_printf(IO_DEF, "[chip (%d,%d) core %d] Original array: %d bytes\n", chipID>>8, chipID&255, coreID, textcount);
-  io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoded array:  %d bytes (%d%%)\n", chipID>>8, chipID&255, coreID, codecount, (codecount*100)/textcount);
+  io_printf(IO_DEF, "Original array: %d bytes\n", textcount);
+  io_printf(IO_DEF, "Encoded array:  %d bytes (%d%%)\n", codecount, (codecount*100)/textcount);
   io_printf(IO_DEF, "Time: %s s\n", ftoa(t,1));
 }
 
@@ -956,7 +1048,7 @@ void check_data(void)
   // This is an encode/decode check on the same core (for data received from neighnouring chips)
   if (err)
   {
-    io_printf(IO_DEF, "[chip (%d,%d) core %d] ERROR! Original and Decoded Outputs do not match!!!\n", chipID>>8, chipID&255, coreID);
+    io_printf(IO_DEF, "ERROR! Original and Decoded Outputs do not match!!!\n");
 
     // Send SDP message
     strcpy(s, "ERROR! Original and Decoded Outputs do not match!!!");
@@ -967,14 +1059,14 @@ void check_data(void)
   }
   else
   {
-    io_printf(IO_DEF, "[chip (%d,%d) core %d] Original and Decoded Outputs Match!\n", chipID>>8, chipID&255, coreID);
+    io_printf(IO_DEF, "Original and Decoded Outputs Match!\n");
     decode_status_chip[coreID-1] = 1;      
   }
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1e6;
-  io_printf(IO_DEF, "[chip (%d,%d) core %d] Original array: %d bytes\n", chipID>>8, chipID&255, coreID, data_orig.size);
-  io_printf(IO_DEF, "[chip (%d,%d) core %d] Encoded array:  %d bytes\n", chipID>>8, chipID&255, coreID, data_enc.size);
-  io_printf(IO_DEF, "[chip (%d,%d) core %d] Decoded array:  %d bytes\n", chipID>>8, chipID&255, coreID, data_dec.size);
+  io_printf(IO_DEF, "Original array: %d bytes\n", data_orig.size);
+  io_printf(IO_DEF, "Encoded array:  %d bytes\n", data_enc.size);
+  io_printf(IO_DEF, "Decoded array:  %d bytes\n", data_dec.size);
   io_printf(IO_DEF, "Total time elapsed: %s s\n", ftoa(t,1));
 }  
 
@@ -1061,7 +1153,16 @@ void app_done ()
 {
   // report simulation time
   if(coreID>=1 && coreID<=CHIPS_TX_N + CHIPS_RX_N)
-    io_printf(IO_DEF, "[chip (%d,%d) core %d] Simulation lasted %d ticks.\n\n",chipID>>8, chipID&255, coreID, spin1_get_simulation_time());
+    io_printf(IO_DEF, "Simulation lasted %d ticks.\n\n", spin1_get_simulation_time());
 }
 
 
+uint spin1_get_chip_board_id()
+{
+  return (uint)sv->board_addr;
+}
+
+uint spin1_get_eth_board_id()
+{
+  return (uint)sv->eth_addr;
+}

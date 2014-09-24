@@ -4,13 +4,13 @@ sp root
 app_stop 16
 
 sp 0 0
-iptag . 17894 1
+iptag 1 set . 17894
 
 sp 4 8
-iptag . 17894 1
+iptag 1 set . 17894
 
 sp 8 4
-iptag . 17894 1
+iptag 1 set . 17894
 
 sp 0 0
 
