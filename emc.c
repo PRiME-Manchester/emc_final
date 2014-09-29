@@ -12,7 +12,7 @@
 #define BOARDX 12
 #define BOARDY 12
 
-#define TIMER_TICK_PERIOD  10000 // 10ms
+#define TIMER_TICK_PERIOD  20000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
 #define SDRAM_BUFFER       10000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
@@ -61,6 +61,7 @@ typedef struct info
 {
   volatile uint trial[12];
   volatile uint progress[12];
+  
 } info_t;
 static volatile info_t *const info               = (info_t *) CHIP_INFO;
 
@@ -195,16 +196,6 @@ void router_setup(void)
     rtr_mc_set(e+3,  (chipID<<8)+WEST,  MASK_ALL, W_LINK);
     rtr_mc_set(e+4,  (chipID<<8)+NEAST, MASK_ALL, NE_LINK);
     rtr_mc_set(e+5,  (chipID<<8)+SWEST, MASK_ALL, SW_LINK);
-/*
-    // Set up chip routes
-    //         entry key                          mask      route             
-    rtr_mc_set(e+6,  ((chipID+y1)<<8)    + SOUTH, MASK_ALL, CORE7);  // from S
-    rtr_mc_set(e+7,  ((chipID-y1)<<8)    + NORTH, MASK_ALL, CORE8);  // from N
-    rtr_mc_set(e+8,  ((chipID+x1)<<8)    + WEST,  MASK_ALL, CORE9);  // from W
-    rtr_mc_set(e+9,  ((chipID-x1)<<8)    + EAST,  MASK_ALL, CORE10); // from E
-    rtr_mc_set(e+10, ((chipID+x1+y1)<<8) + SWEST, MASK_ALL, CORE11); // from SW
-    rtr_mc_set(e+11, ((chipID-x1-y1)<<8) + NEAST, MASK_ALL, CORE12); // from NE
-*/
 
     // Set up chip routes
     //         entry key                                                                  mask      route             
@@ -376,13 +367,13 @@ void encode_decode(uint none1, uint none2)
     uchar buf[];
   } iobuf_t;
 
-  int i, j, k, s_len, cr;
+  int i, s_len, s_pos, len;
   int t1, t_e;
   int vbase, vsize; //size
   vcpu_t *vcpu;
   iobuf_t *iobuf;
   //int err=0;
-  char *s, *s_tmp;
+  char *s, s1[80];
 
   for(i=0; i<TRIALS; i++)
   {
@@ -413,10 +404,10 @@ void encode_decode(uint none1, uint none2)
       // Send IO_BUF to host
       // Stagger output so no conflicts arise
       // Wait for turn to send data to host to avoid conflicts
-      if (coreID==1 && chipIDx==3 && chipIDy==0)
+      if (coreID>=1 && coreID<=6)
       {
-        while ((spin1_get_simulation_time() % (NUMBER_OF_XCHIPS_BOARD * NUMBER_OF_YCHIPS_BOARD))
-                  != chipBoardNum);
+        while ((spin1_get_simulation_time() % (NUMBER_OF_XCHIPS_BOARD * NUMBER_OF_YCHIPS_BOARD * 6))
+                  != chipBoardNum*6+coreID-1);
         io_printf(IO_DEF, "Ticks: %d\n", spin1_get_simulation_time());
 
         // *io_buf Points to SDRAM buffer
@@ -428,47 +419,50 @@ void encode_decode(uint none1, uint none2)
         iobuf = (iobuf_t *)vcpu->iobuf;
         
         t1 = spin1_get_simulation_time();
-
+/*
+        for(i=0; i<20; i++)
+        {
+          strcpy(s1, "ChipNum: ");
+          strcat(s1, itoa(chipNum));
+          s_len = count_chars(s1);
+          send_msg(s1, s_len);
+          spin1_delay_us(100);
+        }
+*/
         while (iobuf!=NULL)
         {
           s     = iobuf->buf;
           s_len = iobuf->ptr;
-          //io_printf(IO_DEF, "String length = %d\n", iobuf->ptr);
-/*
-          for(j=0; j<s_len/128; j++)
+          s_pos = 0;
+          i=0;
+          while(i<s_len)
           {
-            send_msg(s, 128);
-            s+=128;
-          }
-          send_msg(s, s_len - 128*(int)(s_len/128));
-*/
-          while(s_len)
-          {
-            cr=0;
-            while(s[cr++]!='\n');
-//              s_len--;
-            send_msg(s, cr-1);
-            s+=cr;
-            s_len-=cr;
-            //io_printf(IO_DEF, "s_len: %d\n", s_len);
-          }
+            s_pos = i;
+            while(s[i++]!='\n' && i<s_len);
+            if (s[i-1]=='\n')
+              len = i-s_pos-1;
+            else
+              len = i-s_pos;
 
+            send_msg(s+s_pos, len);
+            spin1_delay_us(150);
+          }
+          
+/*          i=0;
+          while(i<s_len)
+          {
+            send_msg(s+i, 100);
+            i+=100;
+          }
+          if (i<s_len)
+            send_msg(s+i, s_len-i);
+*/
           iobuf = iobuf->next;
         }
-
+        
         t_e = spin1_get_simulation_time() - t1;
         io_printf(IO_DEF, "t_e (ticks) = %d\n", t_e);
       }
-/*
-      while(!iobuf)
-      {
-        s = iobuf->ptr;
-        s_len = count_chars(s);
-        send_msg(s,s_len);
-
-        iobuf = iobuf->next;
-      }
-*/
       ////////////////////////////////////////
 
       finish[coreID-1] = 1;
@@ -602,12 +596,10 @@ void send_msg(char *s, uint s_len)
 {
   spin1_memcpy(my_msg.data, (void *)s, s_len);
   
-  //s_len = sizeof(uint);
-  spin1_memcpy(my_msg.data, (void *)s, s_len);
   my_msg.length = sizeof(sdp_hdr_t) + sizeof(cmd_hdr_t) + s_len;
 
   // Send SDP message
-  while(!spin1_send_sdp_msg(&my_msg, 10)); // 10ms timeout
+  while(!spin1_send_sdp_msg(&my_msg, 1)); // 10ms timeout
 }
 
 int count_chars(char *str)
