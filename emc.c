@@ -12,9 +12,9 @@
 #define BOARDX 12
 #define BOARDY 12
 
-#define TIMER_TICK_PERIOD  20000 // 10ms
+#define TIMER_TICK_PERIOD  2000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       10000
+#define SDRAM_BUFFER       20
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        100000
@@ -27,13 +27,17 @@
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
 #define TRIALS             1
-#define TX_REPS            1
+#define TX_REPS            5
 
 // Address values
-#define FINISH             (SPINN_SDRAM_BASE + 0)               // size: 12 ints ( 0..11)
-#define DECODE_STATUS_CHIP (SPINN_SDRAM_BASE + 12*sizeof(uint)) // size: 6 ints  (12..17)
-#define RX_PACKETS_STATUS  (SPINN_SDRAM_BASE + 18*sizeof(uint)) // size: 6 ints  (18..23)
-#define CHIP_INFO          (SPINN_SDRAM_BASE + 24*sizeof(uint)) // size: 24 ints (24..47)
+#define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)
+#define DECODE_STATUS_CHIP (SPINN_SDRAM_BASE + 12*sizeof(uint))  // size: 6 ints  (12..17)
+#define RX_PACKETS_STATUS  (SPINN_SDRAM_BASE + 18*sizeof(uint))  // size: 6 ints  (18..23)
+#define CHIP_INFO_TX       (SPINN_SDRAM_BASE + 24*sizeof(uint))  // size: 19*6=114 bytes (24..137)
+#define CHIP_INFO_RX       (SPINN_SDRAM_BASE + 138*sizeof(uint)) // size: 19*6=114 bytes (138..137
+
+#define __TEST_DROP_PACKET
+#define TEST_MODIFY_PACKET
 
 uint packets     = 0;
 uint bit_buffer  = 0;
@@ -57,13 +61,30 @@ uint t_int, t_frac;
 // volatile:              compiler does not cache variable
 // *const:                compiler uses this value directly as an addresses
 //                        (only done for efficienct reasons)
-typedef struct info
+typedef struct
 {
-  volatile uint trial[12];
-  volatile uint progress[12];
-  
-} info_t;
-static volatile info_t *const info               = (info_t *) CHIP_INFO;
+  volatile uint trial_num;
+  volatile uint org_array_size;
+  volatile uint enc_array_size;
+  volatile uint dec_array_size;
+  volatile ushort encode_time;
+  volatile ushort decode_time;
+  volatile uchar enc_dec_match; // yes/no
+} info_tx_t;
+static volatile info_tx_t *const info_tx               = (info_tx_t *) CHIP_INFO_TX;
+
+typedef struct
+{
+  volatile uint trial_num;
+  volatile uint stream_num;
+  volatile uint org_array_size;
+  volatile uint enc_array_size;
+  volatile uint dec_array_size;
+  volatile ushort decode_time;
+  volatile uchar enc_dec_match; // yes/no
+} info_rx_t;
+static volatile info_rx_t *const info_rx               = (info_rx_t *) CHIP_INFO_RX;
+
 
 static volatile uint   *const finish             = (uint *) FINISH; 
 static volatile uint   *const decode_status_chip = (uint *) DECODE_STATUS_CHIP;
@@ -71,20 +92,36 @@ static volatile uint   *const rx_packets_status  = (uint *) RX_PACKETS_STATUS;
 
 sdp_msg_t my_msg;
 
-typedef struct sdram_tx
+typedef struct
 {
   uint size;
   unsigned char *buffer;
 } sdram_tx_t;
 sdram_tx_t data_orig, data_enc, data_dec;
 
-typedef struct sdram_rx
+typedef struct
 {
   uint orig_size;
   uint enc_size;
   unsigned char *buffer;
 } sdram_rx_t;
 sdram_rx_t data;
+
+
+typedef struct
+{
+  int chipIDx;
+  int chipIDy;
+  int coreID;  //1-6
+  int trialNum;
+  int orig_drop_pkt;
+  int orig_mod_pkt;
+  int orig_mod_val;
+  int enc_drop_pkt;
+  int enc_mod_pkt;
+  int enc_mod_val;
+} fault_t;
+fault_t fault[5];
 
 
 // Spinnaker function prototypes
@@ -105,16 +142,15 @@ int mod(int x, int m);
 uint spin1_get_chip_board_id();
 uint spin1_get_eth_board_id();
 
-// Fault testing
-void drop_packet(uint chip, uint link, uint packet_num);
-void modify_packet(uint chip, uint link, uint packet_num, uint packet_value);
-
 void send_msg(char *s, uint s_len);
 int frac(float num, uint precision);
 
 // Tx/Rx packets function prototypes
 void count_packets(uint key, uint payload);
-void tx_packets(void);
+void tx_packets(int trialNum);
+
+// Fault testing
+void fault_test_init(void);
 
 int c_main(void)
 {
@@ -136,6 +172,9 @@ int c_main(void)
   chipBoardNum = (chipBoardIDy * NUMBER_OF_YCHIPS_BOARD) + chipBoardIDx;
   io_printf(IO_DEF, "chipID (%d,%d), chipID %d\n", chipIDx, chipIDy, chipNum);
   io_printf(IO_DEF, "chip_boardID (%d,%d), chipBoardNum %d\n", chipBoardIDx, chipBoardIDy, chipBoardNum);
+
+  // fault testing initialization
+  fault_test_init();
 
   // initialise SDP message buffer
   sdp_init();
@@ -367,13 +406,13 @@ void encode_decode(uint none1, uint none2)
     uchar buf[];
   } iobuf_t;
 
-  int i, s_len, s_pos, len;
+  int i, j, s_len, s_pos, len;
   int t1, t_e;
   int vbase, vsize; //size
   vcpu_t *vcpu;
   iobuf_t *iobuf;
   //int err=0;
-  char *s, s1[80];
+  char *s, s1[100];
 
   for(i=0; i<TRIALS; i++)
   {
@@ -382,8 +421,8 @@ void encode_decode(uint none1, uint none2)
       io_printf(IO_DEF, "Trial: %d\n", i+1);
       
       //All chips
-      info->trial[coreID-1] = i+1;
-      info->progress[coreID-1] = 0;
+      info_tx->trial_num = i+1;
+      //info_tx->progress[coreID-1] = 0;
       finish[coreID-1] = 0;
       
       /*******************************************************/
@@ -419,16 +458,22 @@ void encode_decode(uint none1, uint none2)
         iobuf = (iobuf_t *)vcpu->iobuf;
         
         t1 = spin1_get_simulation_time();
+
 /*
-        for(i=0; i<20; i++)
+        // Send 2 messages per core
+        for(i=0; i<2; i++)
         {
           strcpy(s1, "ChipNum: ");
           strcat(s1, itoa(chipNum));
+          strcat(s1, " CoreID: ");
+          strcat(s1, itoa(coreID));
           s_len = count_chars(s1);
           send_msg(s1, s_len);
-          spin1_delay_us(100);
+//          spin1_delay_us(100);
         }
 */
+
+/*
         while (iobuf!=NULL)
         {
           s     = iobuf->buf;
@@ -447,19 +492,9 @@ void encode_decode(uint none1, uint none2)
             send_msg(s+s_pos, len);
             spin1_delay_us(150);
           }
-          
-/*          i=0;
-          while(i<s_len)
-          {
-            send_msg(s+i, 100);
-            i+=100;
-          }
-          if (i<s_len)
-            send_msg(s+i, s_len-i);
-*/
           iobuf = iobuf->next;
         }
-        
+*/        
         t_e = spin1_get_simulation_time() - t1;
         io_printf(IO_DEF, "t_e (ticks) = %d\n", t_e);
       }
@@ -467,7 +502,7 @@ void encode_decode(uint none1, uint none2)
 
       finish[coreID-1] = 1;
 
-/*
+
       for(j=0; j<TX_REPS; j++)
       {
         io_printf(IO_DEF, "Transmitting packets (Rep %d) ...\n", j+1);
@@ -483,7 +518,7 @@ void encode_decode(uint none1, uint none2)
           s_len = count_chars(s);
           send_msg(s, s_len);
         }
-        tx_packets();
+        tx_packets(j);
 
         // Transmit packets TX_REPS times
         decode_done = 0;
@@ -513,7 +548,7 @@ void encode_decode(uint none1, uint none2)
 
         decode_done = 0;
       } 
-*/
+
 
 /*      for(j=0; j<TX_REPS; j++)
       {
@@ -530,14 +565,14 @@ void encode_decode(uint none1, uint none2)
   }
 }
 
-
 // Transmit packets to neighbouring chips
 // Cores 1-6 will send packets to the neighbors on the N, S, E, W, NE, SW links
 // Cores 1-6 are already inferred from the calling function (encode_decode)
 // Cores 7-12 receive
-void tx_packets(void)
+void tx_packets(int trialNum)
 {
-  int i, num, shift;
+  int i, j, num, shift;
+  uchar flag;
 
   //spin1_delay_us((chipID+coreID)*10);
 
@@ -559,15 +594,80 @@ void tx_packets(void)
     shift+=8;
   }
 
+  io_printf(IO_BUF, "chipNum: (%d,%d) coreID: %d, Fault - chip: (%d,%d), core: %d, drop (orig): %d, drop (enc): %d  mod (enc): %d mod (val): %d\n",
+                              chipIDx, chipIDy, coreID, fault[0].chipIDx, fault[0].chipIDy,
+                              fault[0].coreID, fault[0].orig_drop_pkt, fault[0].enc_drop_pkt, fault[0].orig_mod_pkt, fault[0].orig_mod_val);
   for(i=0; i<data_orig.size; i++)
   {
-    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
+    #ifdef TEST_DROP_PACKET
+      flag = 0;
+      for(j=0;j<sizeof(fault); j++)
+        flag |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].orig_drop_pkt==i;
+
+      if (!flag)
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
+      else
+        io_printf(IO_BUF, "Packet %d dropped (Orig. stream)!\n", i);
+
+    #elif TEST_MODIFY_PACKET
+      flag = 0;
+      for(j=0;j<sizeof(fault); j++)
+      {
+        flag = fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+               fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].orig_mod_pkt==i);
+        if (flag)
+          break;
+      }
+
+      io_printf(IO_BUF, "Mod. byte: %d, value %d\n", j, fault[j].orig_mod_val);
+      if (flag)
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i]+fault[j].orig_mod_val, WITH_PAYLOAD));
+      else
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
+
+    #else
+      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
+
+    #endif
+
     spin1_delay_us(1);
   }
 
   for(i=0; i<data_enc.size; i++)
   {
-    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
+    #ifdef TEST_DROP_PACKET
+      flag = 0;
+      for(j=0; j<sizeof(fault); j++)
+        flag |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].enc_drop_pkt==i;
+
+      if (!flag)
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
+      else
+        io_printf(IO_BUF, "Packet %d dropped (Enc. stream)!\n", i);
+
+    #elif TEST_MODIFY_PACKET
+      flag = 0;
+      for(j=0; j<sizeof(fault); j++)
+      {
+        flag = fault[j].chipIDx==chipIDx && fault[j].chipIDx==chipIDx && fault[j].coreID==coreID && fault[j].enc_mod_pkt==i)
+        if (flag)
+          break;
+      }
+
+      io_printf(IO_BUF, "Mod. byte: %d, value %d\n", j, fault[j].enc_mod_val);
+      if (flag)
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i]+fault[0].err, WITH_PAYLOAD));
+      else
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
+     
+
+    #else
+      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
+
+    #endif
+
     spin1_delay_us(1);
   }
   while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
@@ -651,6 +751,9 @@ void decode_rx_packets(uint none1, uint none2)
       strcat(s, ")!");
       s_len = count_chars(s);
       send_msg(s, s_len);
+
+      // Decoding done
+      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xefffffff, WITH_PAYLOAD));
     }
     else
     {
@@ -693,6 +796,7 @@ void decode_rx_packets(uint none1, uint none2)
   }
 }
 
+
 void report_status(uint ticks, uint null)
 {
   uint i, s_len, finish_tmp=0;
@@ -702,17 +806,18 @@ void report_status(uint ticks, uint null)
   static int tmp = -1;
   int progress_sum=0;
 
+/*
   if (chipIDx==0 && chipIDy==0 && coreID==13 && (ticks % (NUMBER_OF_XCHIPS * NUMBER_OF_YCHIPS))==chipNum )
   {
     for(i=0; i<6; i++)
-      progress_sum+=info->progress[i];
+      progress_sum+=info_tx->progress[i];
 
     if (tmp!=progress_sum)
     {
       t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
       
       strcpy(s, "Trial: ");
-      strcat(s, itoa(info->trial[0]));
+      strcat(s, itoa(info_tx->trial[0]));
 
       strcat(s, " Progress: ");
       strcat(s, itoa(progress_sum/6));
@@ -725,6 +830,7 @@ void report_status(uint ticks, uint null)
       tmp = progress_sum;
     }
   }
+*/
 
   //decode_status_chip[coreID-1] = decode_status;
 
@@ -849,11 +955,11 @@ void encode(void)
         {  
           t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
           
-          io_printf(IO_DEF, "%d%% Time: %s s\n", progress, ftoa(t,1));
+          //io_printf(IO_DEF, "%d%% Time: %s s\n", progress, ftoa(t,1));
 
-          info->progress[coreID-1] = progress;
+          //info_tx->progress[coreID-1] = progress;
 
-          progress_tmp = progress;
+          //progress_tmp = progress;
         }
 
       }
@@ -1062,18 +1168,6 @@ void check_data(void)
   io_printf(IO_DEF, "Total time elapsed: %s s\n", ftoa(t,1));
 }  
 
-// Fault testing
-void drop_packet(uint chip, uint link, uint packet_num)
-{
-
-}
-
-void modify_packet(uint chip, uint link, uint packet_num, uint packet_value)
-{
-
-}
-
-
 inline int getbit(int n) /* get n bits */
 {
   int i, x;
@@ -1157,4 +1251,63 @@ uint spin1_get_chip_board_id()
 uint spin1_get_eth_board_id()
 {
   return (uint)sv->eth_addr;
+}
+
+void fault_test_init(void)
+{
+  fault[0].chipIDx       = 0;
+  fault[0].chipIDy       = 0;
+  fault[0].coreID        = 6;
+  fault[0].trialNum      = 2;
+  fault[0].orig_drop_pkt = -1;  // packet no. to drop (orig. stream)
+  fault[0].orig_mod_pkt  = 12; // packet no. to modify
+  fault[0].orig_mod_val  = 1;  // packet modify value
+  fault[0].enc_drop_pkt  = -1; // packet no. to drop (enc. stream)
+  fault[0].enc_mod_pkt   = 12; // packet no. to modify
+  fault[0].enc_mod_val   = 1;  // packet modify value
+
+  fault[1].chipIDx       = -1;
+  fault[1].chipIDy       = -1;
+  fault[1].coreID        = -1;
+  fault[1].trialNum      = -1;
+  fault[1].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
+  fault[1].orig_mod_pkt  = 12; // packet no. to modify
+  fault[1].orig_mod_val  = 1;  // packet modify value
+  fault[1].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
+  fault[1].enc_mod_pkt   = 12; // packet no. to modify
+  fault[1].enc_mod_val   = 1;  // packet modify value
+
+  fault[2].chipIDx       = -1;
+  fault[2].chipIDy       = -1;
+  fault[2].coreID        = -1;
+  fault[2].trialNum      = -1;
+  fault[2].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
+  fault[2].orig_mod_pkt  = 12; // packet no. to modify
+  fault[2].orig_mod_val  = 1;  // packet modify value
+  fault[2].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
+  fault[2].enc_mod_pkt   = 12; // packet no. to modify
+  fault[2].enc_mod_val   = 1;  // packet modify value
+
+  fault[3].chipIDx       = -1;
+  fault[3].chipIDx       = -1;
+  fault[3].coreID        = -1;
+  fault[3].trialNum      = -1;
+  fault[3].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
+  fault[3].orig_mod_pkt  = 12; // packet no. to modify
+  fault[3].orig_mod_val  = 1;  // packet modify value
+  fault[3].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
+  fault[3].enc_mod_pkt   = 12; // packet no. to modify
+  fault[3].enc_mod_val   = 1;  // packet modify value
+
+  fault[4].chipIDx       = -1;
+  fault[4].chipIDy       = -1;
+  fault[4].coreID        = -1;
+  fault[4].trialNum      = -1;
+  fault[4].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
+  fault[4].orig_mod_pkt  = 12; // packet no. to modify
+  fault[4].orig_mod_val  = 1;  // packet modify value
+  fault[4].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
+  fault[4].enc_mod_pkt   = 12; // packet no. to modify
+  fault[4].enc_mod_val   = 1;  // packet modify value
+
 }
