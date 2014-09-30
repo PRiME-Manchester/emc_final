@@ -14,7 +14,7 @@
 
 #define TIMER_TICK_PERIOD  2000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       20
+#define SDRAM_BUFFER       1000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        100000
@@ -27,7 +27,7 @@
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
 #define TRIALS             1
-#define TX_REPS            5
+#define TX_REPS            20
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)
@@ -36,8 +36,7 @@
 #define CHIP_INFO_TX       (SPINN_SDRAM_BASE + 24*sizeof(uint))  // size: 19*6=114 bytes (24..137)
 #define CHIP_INFO_RX       (SPINN_SDRAM_BASE + 138*sizeof(uint)) // size: 19*6=114 bytes (138..137
 
-#define __TEST_DROP_PACKET
-#define TEST_MODIFY_PACKET
+#define FAULT_TESTING
 
 uint packets     = 0;
 uint bit_buffer  = 0;
@@ -55,6 +54,7 @@ uint decode_status=0;
 
 float t;
 uint t_int, t_frac;
+uint error_pkt;
 
 // N.B.
 // static (global scope): only declared within this file
@@ -85,7 +85,6 @@ typedef struct
 } info_rx_t;
 static volatile info_rx_t *const info_rx               = (info_rx_t *) CHIP_INFO_RX;
 
-
 static volatile uint   *const finish             = (uint *) FINISH; 
 static volatile uint   *const decode_status_chip = (uint *) DECODE_STATUS_CHIP;
 static volatile uint   *const rx_packets_status  = (uint *) RX_PACKETS_STATUS;
@@ -103,6 +102,7 @@ typedef struct
 {
   uint orig_size;
   uint enc_size;
+  uint stream_end;
   unsigned char *buffer;
 } sdram_rx_t;
 sdram_rx_t data;
@@ -110,16 +110,12 @@ sdram_rx_t data;
 
 typedef struct
 {
-  int chipIDx;
-  int chipIDy;
+  int chipIDx, chipIDy;
   int coreID;  //1-6
   int trialNum;
-  int orig_drop_pkt;
-  int orig_mod_pkt;
-  int orig_mod_val;
-  int enc_drop_pkt;
-  int enc_mod_pkt;
-  int enc_mod_val;
+  int orig_size, enc_size, drop_eof;
+  int orig_drop_pkt, orig_mod_pkt, orig_mod_val;
+  int enc_drop_pkt,  enc_mod_pkt,  enc_mod_val;
 } fault_t;
 fault_t fault[5];
 
@@ -132,6 +128,7 @@ void encode_decode(uint none1, uint none2);
 void store_packets(uint key, uint payload);
 void report_status(uint ticks, uint null);
 void decode_rx_packets(uint none1, uint none2);
+void report_buffer_error(uint none1, uint none2);
 void app_done();
 void sdp_init();
 char *itoa(uint n);
@@ -173,9 +170,12 @@ int c_main(void)
   io_printf(IO_DEF, "chipID (%d,%d), chipID %d\n", chipIDx, chipIDy, chipNum);
   io_printf(IO_DEF, "chip_boardID (%d,%d), chipBoardNum %d\n", chipBoardIDx, chipBoardIDy, chipBoardNum);
 
-  // fault testing initialization
-  fault_test_init();
+  error_pkt = 0;
 
+  // fault testing initialization
+  #ifdef FAULT_TESTING
+    fault_test_init();
+  #endif
   // initialise SDP message buffer
   sdp_init();
 
@@ -549,18 +549,6 @@ void encode_decode(uint none1, uint none2)
         decode_done = 0;
       } 
 
-
-/*      for(j=0; j<TX_REPS; j++)
-      {
-        io_printf(IO_DEF, "TX Rep: %d\n", j+1);
-        if (TX_REPS==1)
-          tx_packets();
-
-        while(!decode_done);
-        decode_done = 0;
-      }
-*/
-
     }
   }
 }
@@ -572,59 +560,130 @@ void encode_decode(uint none1, uint none2)
 void tx_packets(int trialNum)
 {
   int i, j, num, shift;
-  uchar flag;
+  uchar drop_pkt, mod_pkt;
 
   //spin1_delay_us((chipID+coreID)*10);
 
-  shift = 0;
-  for (i=0; i<4; i++)
-  {
-    num = (data_orig.size>>shift) & 255;
-    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-    spin1_delay_us(1);
-    shift+=8;
-  }
+  // Sending orig array size
+  #ifdef FAULT_TESTING
+    mod_pkt = 0;
+    for(j=0;j<sizeof(fault); j++)
+    {
+      mod_pkt = fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].orig_size;
+      if (mod_pkt)
+        break;
+    }
 
-  shift=0;
-  for (i=0; i<4; i++)
-  {
-    num = (data_enc.size>>shift) & 255;
-    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-    spin1_delay_us(1);
-    shift+=8;
-  }
+    if(mod_pkt)
+    {
+      io_printf(IO_BUF, "Orig. size modified!\n");
+      shift = 0;
+      for (i=0; i<4; i++)
+      {
+        num = (fault[j].orig_size>>shift) & 255;
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+        spin1_delay_us(1);
+        shift+=8;
+      }
+    }
+    else
+    {
+      shift = 0;
+      for (i=0; i<4; i++)
+      {
+        num = (data_orig.size>>shift) & 255;
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+        spin1_delay_us(1);
+        shift+=8;
+      }
+    }
 
-  io_printf(IO_BUF, "chipNum: (%d,%d) coreID: %d, Fault - chip: (%d,%d), core: %d, drop (orig): %d, drop (enc): %d  mod (enc): %d mod (val): %d\n",
-                              chipIDx, chipIDy, coreID, fault[0].chipIDx, fault[0].chipIDy,
-                              fault[0].coreID, fault[0].orig_drop_pkt, fault[0].enc_drop_pkt, fault[0].orig_mod_pkt, fault[0].orig_mod_val);
+  #else  
+    shift = 0;
+    for (i=0; i<4; i++)
+    {
+      num = (data_orig.size>>shift) & 255;
+      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+      spin1_delay_us(1);
+      shift+=8;
+    }
+  #endif
+
+  // Sending encoded array size
+  #ifdef FAULT_TESTING
+    mod_pkt = 0;
+    for(j=0;j<sizeof(fault); j++)
+    {
+      mod_pkt = fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].enc_size;
+      if (mod_pkt)
+        break;
+    }
+
+    if (mod_pkt)
+    {
+      io_printf(IO_BUF, "Enc. size modified!\n");
+      shift=0;
+      for (i=0; i<4; i++)
+      {
+        num = (fault[j].enc_size>>shift) & 255;
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+        spin1_delay_us(1);
+        shift+=8;
+      }
+    }
+    else
+    {
+      shift=0;
+      for (i=0; i<4; i++)
+      {
+        num = (data_enc.size>>shift) & 255;
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+        spin1_delay_us(1);
+        shift+=8;
+      }
+    }
+
+  #else
+    shift=0;
+    for (i=0; i<4; i++)
+    {
+      num = (data_enc.size>>shift) & 255;
+      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+      spin1_delay_us(1);
+      shift+=8;
+    }
+  #endif
+
+  // Sending original stream
   for(i=0; i<data_orig.size; i++)
   {
-    #ifdef TEST_DROP_PACKET
-      flag = 0;
+    #ifdef FAULT_TESTING
+      drop_pkt = 0;
       for(j=0;j<sizeof(fault); j++)
-        flag |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
-                fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].orig_drop_pkt==i;
-
-      if (!flag)
-        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
-      else
-        io_printf(IO_BUF, "Packet %d dropped (Orig. stream)!\n", i);
-
-    #elif TEST_MODIFY_PACKET
-      flag = 0;
+        drop_pkt |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                    fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].orig_drop_pkt==i;
+      
+      mod_pkt = 0;
       for(j=0;j<sizeof(fault); j++)
       {
-        flag = fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
-               fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].orig_mod_pkt==i);
-        if (flag)
+        mod_pkt = fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                  fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].orig_mod_pkt==i;
+        if (mod_pkt)
           break;
       }
 
-      io_printf(IO_BUF, "Mod. byte: %d, value %d\n", j, fault[j].orig_mod_val);
-      if (flag)
-        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i]+fault[j].orig_mod_val, WITH_PAYLOAD));
-      else
+      if (!drop_pkt && !mod_pkt)
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
+      else if (mod_pkt)
+      {
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, fault[j].orig_mod_val, WITH_PAYLOAD));
+        io_printf(IO_BUF, "Packet %d modified (Orig. stream)!\n", fault[j].orig_mod_pkt);
+      }
+      else
+        io_printf(IO_BUF, "Packet %d dropped (Orig. stream)!\n", i);
+
 
     #else
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
@@ -634,34 +693,33 @@ void tx_packets(int trialNum)
     spin1_delay_us(1);
   }
 
+  // Sending encoded stream
   for(i=0; i<data_enc.size; i++)
   {
-    #ifdef TEST_DROP_PACKET
-      flag = 0;
+    #ifdef FAULT_TESTING
+      drop_pkt = 0;
       for(j=0; j<sizeof(fault); j++)
-        flag |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
-                fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].enc_drop_pkt==i;
+        drop_pkt |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                    fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].enc_drop_pkt==i;
 
-      if (!flag)
-        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
-      else
-        io_printf(IO_BUF, "Packet %d dropped (Enc. stream)!\n", i);
-
-    #elif TEST_MODIFY_PACKET
-      flag = 0;
-      for(j=0; j<sizeof(fault); j++)
+      mod_pkt = 0;
+      for(j=0;j<sizeof(fault); j++)
       {
-        flag = fault[j].chipIDx==chipIDx && fault[j].chipIDx==chipIDx && fault[j].coreID==coreID && fault[j].enc_mod_pkt==i)
-        if (flag)
+        mod_pkt = fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                  fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].enc_mod_pkt==i;
+        if (mod_pkt)
           break;
       }
 
-      io_printf(IO_BUF, "Mod. byte: %d, value %d\n", j, fault[j].enc_mod_val);
-      if (flag)
-        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i]+fault[0].err, WITH_PAYLOAD));
+      if (!drop_pkt && !mod_pkt)
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
+      else if (mod_pkt)
+      {
+        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, fault[j].enc_mod_val, WITH_PAYLOAD));
+        io_printf(IO_BUF, "Packet %d modified (Enc. stream)!\n", fault[j].enc_mod_pkt);
+      }
       else
-        while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
-     
+        io_printf(IO_BUF, "Packet %d dropped (Enc. stream)!\n", i);
 
     #else
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
@@ -670,24 +728,48 @@ void tx_packets(int trialNum)
 
     spin1_delay_us(1);
   }
-  while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+
+  #ifdef FAULT_TESTING
+    drop_pkt = 0;
+    for(j=0; j<sizeof(fault); j++)
+      drop_pkt |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                  fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].drop_eof;
+
+    // Drop 1 out of 2 packets
+    if (!drop_pkt)
+      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+    else
+      io_printf(IO_BUF, "One EOF marker packet dropped!\n");
+
+    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+  #else
+    // Send the EOF stream market twice to increase robustness
+    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+  #endif
 }
 
 // Count the packets received
 void store_packets(uint key, uint payload)
 {
-/*
-  if (payload!=0xffffffff)
-    data.buffer[packets++] = payload;
-  else
+  if (payload==0xffffffff && !data.stream_end)
+  {  
+    error_pkt = 0;
     spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
-*/
-  if (payload==0xffffffff)
-    spin1_schedule_callback(decode_rx_packets, 0, 0, 2);
+  }
   else if (payload==0xefffffff)
     decode_done = 1;
-  else
+  else if (!error_pkt)
+  {
     data.buffer[packets++] = payload;
+    data.stream_end = 0;
+  }
+
+  if (packets==SDRAM_BUFFER+SDRAM_BUFFER_X+8)
+  {
+    error_pkt = 1;
+    spin1_schedule_callback(report_buffer_error, 0, 0, 2);
+  }
 
 }
 
@@ -720,6 +802,17 @@ void sdp_init()
   my_msg.flags     = 0x07;          // Flags = 7
   my_msg.srce_port = spin1_get_core_id ();  // Source port
   my_msg.srce_addr = spin1_get_chip_id ();  // Source addr
+}
+
+void report_buffer_error(uint none1, uint none2)
+{
+  char s[80];
+  uint s_len;
+
+  io_printf(IO_BUF, "Packet buffer exceeded (%d)!\n", packets);
+  strcpy(s, "Packet buffer exceeded!");
+  s_len = count_chars(s);
+  send_msg(s, s_len);
 }
 
 void decode_rx_packets(uint none1, uint none2)
@@ -793,6 +886,7 @@ void decode_rx_packets(uint none1, uint none2)
 
     trial_num++;
     packets = 0;
+    data.stream_end = 1;
   }
 }
 
@@ -967,6 +1061,7 @@ void encode(void)
   }
 
   flush_bit_buffer();
+  data.stream_end = 1;
 
   t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
   io_printf(IO_DEF, "Original array: %d bytes\n", textcount);
@@ -1255,21 +1350,32 @@ uint spin1_get_eth_board_id()
 
 void fault_test_init(void)
 {
-  fault[0].chipIDx       = 0;
-  fault[0].chipIDy       = 0;
-  fault[0].coreID        = 6;
-  fault[0].trialNum      = 2;
-  fault[0].orig_drop_pkt = -1;  // packet no. to drop (orig. stream)
-  fault[0].orig_mod_pkt  = 12; // packet no. to modify
-  fault[0].orig_mod_val  = 1;  // packet modify value
-  fault[0].enc_drop_pkt  = -1; // packet no. to drop (enc. stream)
-  fault[0].enc_mod_pkt   = 12; // packet no. to modify
-  fault[0].enc_mod_val   = 1;  // packet modify value
+  // Fault 1
+  fault[0].chipIDx        = 0;
+  fault[0].chipIDy        = 0;
+  fault[0].coreID         = 6;
+  fault[0].trialNum       = 2;
+  
+  fault[0].orig_size      = 25;
+  fault[0].enc_size       = 68;
+  fault[0].drop_eof       = 1;
 
+  fault[0].orig_drop_pkt  = -1;  // packet no. to drop (orig. stream)
+  fault[0].orig_mod_pkt   = -1; // packet no. to modify
+  fault[0].orig_mod_val   = -1;  // packet modify value
+  fault[0].enc_drop_pkt   = -1; // packet no. to drop (enc. stream)
+  fault[0].enc_mod_pkt    = -1; // packet no. to modify
+  fault[0].enc_mod_val    = -1;  // packet modify value
+
+
+  // Fault 2
   fault[1].chipIDx       = -1;
   fault[1].chipIDy       = -1;
   fault[1].coreID        = -1;
   fault[1].trialNum      = -1;
+  fault[1].orig_size      = 0;
+  fault[1].enc_size       = 0;
+  fault[1].drop_eof       = 0;
   fault[1].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
   fault[1].orig_mod_pkt  = 12; // packet no. to modify
   fault[1].orig_mod_val  = 1;  // packet modify value
@@ -1277,6 +1383,7 @@ void fault_test_init(void)
   fault[1].enc_mod_pkt   = 12; // packet no. to modify
   fault[1].enc_mod_val   = 1;  // packet modify value
 
+  // Fault 3
   fault[2].chipIDx       = -1;
   fault[2].chipIDy       = -1;
   fault[2].coreID        = -1;
@@ -1288,6 +1395,7 @@ void fault_test_init(void)
   fault[2].enc_mod_pkt   = 12; // packet no. to modify
   fault[2].enc_mod_val   = 1;  // packet modify value
 
+  // Fault 4
   fault[3].chipIDx       = -1;
   fault[3].chipIDx       = -1;
   fault[3].coreID        = -1;
@@ -1299,6 +1407,7 @@ void fault_test_init(void)
   fault[3].enc_mod_pkt   = 12; // packet no. to modify
   fault[3].enc_mod_val   = 1;  // packet modify value
 
+  // Fault 5
   fault[4].chipIDx       = -1;
   fault[4].chipIDy       = -1;
   fault[4].coreID        = -1;
@@ -1309,5 +1418,4 @@ void fault_test_init(void)
   fault[4].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
   fault[4].enc_mod_pkt   = 12; // packet no. to modify
   fault[4].enc_mod_val   = 1;  // packet modify value
-
 }
