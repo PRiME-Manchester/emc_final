@@ -2,27 +2,41 @@
 #include "spin1_api.h"
 #include "lzss.h"
 #include "router.h"
-
-#define NODEBUG
-// Switch between iobuf and iostd from this define
-#define IO_DEF IO_BUF
+#include "jtag.h"
 
 #define abs(x) ((x)<0 ? -(x) : (x))
 
-#define BOARDX 12
-#define BOARDY 12
+#define NODEBUG
+#define NO_FAULT_TESTING
+#define BOARDS24
+
+// Switch between iobuf and iostd from this define
+#define IO_DEF IO_BUF
 
 #define TIMER_TICK_PERIOD  2000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       100000
+#define SDRAM_BUFFER       1000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        100000
-#define NUMBER_OF_CHIPS    144
-#define NUMBER_OF_XCHIPS   12
-#define NUMBER_OF_YCHIPS   12
-#define NUMBER_OF_XCHIPS_BOARD 8
-#define NUMBER_OF_YCHIPS_BOARD 8
+#define DELAY              1 //us delay 
+
+#ifdef BOARDS3
+  #define NUMBER_OF_CHIPS  144
+  #define XCHIPS           12
+  #define YCHIPS           12
+  #define XCHIPS_BOARD     8
+  #define YCHIPS_BOARD     8
+#endif 
+
+#ifdef BOARDS24
+  #define NUMBER_OF_CHIPS  1152
+  #define XCHIPS           48
+  #define YCHIPS           24
+  #define XCHIPS_BOARD     8
+  #define YCHIPS_BOARD     8
+#endif
+
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
@@ -36,7 +50,6 @@
 #define CHIP_INFO_TX       (SPINN_SDRAM_BASE + 24*sizeof(uint))  // size: 19*6=114 bytes (24..137)
 #define CHIP_INFO_RX       (SPINN_SDRAM_BASE + 138*sizeof(uint)) // size: 19*6=114 bytes (138..137
 
-#define FAULT_TESTING
 
 uint packets     = 0;
 uint bit_buffer  = 0;
@@ -62,7 +75,7 @@ uint error_pkt;
 // *const:                compiler uses this value directly as an addresses
 //                        (only done for efficienct reasons)
 typedef struct
-{
+{ 
   volatile uint trial_num;
   volatile uint org_array_size;
   volatile uint enc_array_size;
@@ -71,7 +84,7 @@ typedef struct
   volatile ushort decode_time;
   volatile uchar enc_dec_match; // yes/no
 } info_tx_t;
-static volatile info_tx_t *const info_tx               = (info_tx_t *) CHIP_INFO_TX;
+static volatile info_tx_t *const info_tx = (info_tx_t *) CHIP_INFO_TX;
 
 typedef struct
 {
@@ -148,6 +161,7 @@ void tx_packets(int trialNum);
 
 // Fault testing
 void fault_test_init(void);
+void ijtag_init(void);
 
 int c_main(void)
 {
@@ -162,11 +176,11 @@ int c_main(void)
   // get this chip's coordinates for core map
   chipIDx = chipID>>8;
   chipIDy = chipID&255;
-  chipNum = (chipIDy * NUMBER_OF_YCHIPS) + chipIDx;
+  chipNum = (chipIDy * YCHIPS) + chipIDx;
 
   chipBoardIDx = chipBoardID>>8;
   chipBoardIDy = chipBoardID&255;
-  chipBoardNum = (chipBoardIDy * NUMBER_OF_YCHIPS_BOARD) + chipBoardIDx;
+  chipBoardNum = (chipBoardIDy * YCHIPS_BOARD) + chipBoardIDx;
   io_printf(IO_DEF, "chipID (%d,%d), chipID %d\n", chipIDx, chipIDy, chipNum);
   io_printf(IO_DEF, "chip_boardID (%d,%d), chipBoardNum %d\n", chipBoardIDx, chipBoardIDy, chipBoardNum);
 
@@ -178,6 +192,10 @@ int c_main(void)
   #endif
   // initialise SDP message buffer
   sdp_init();
+
+  // Reset JTAG controller if leadAp
+//  if (leadAp)
+//    ijtag_init();
 
   // set timer tick value (in microseconds)
   spin1_set_timer_tick(TIMER_TICK_PERIOD);
@@ -238,12 +256,12 @@ void router_setup(void)
 
     // Set up chip routes
     //         entry key                                                                  mask      route             
-    rtr_mc_set(e+6,  (((chipIDx<<8) + mod(chipIDy+1, BOARDY))<<8)                + SOUTH, MASK_ALL, CORE9);  // from S  9
-    rtr_mc_set(e+7,  (((chipIDx<<8) + mod(chipIDy-1, BOARDY))<<8)                + NORTH, MASK_ALL, CORE12); // from N  12
-    rtr_mc_set(e+8,  (((mod(chipIDx+1, BOARDX)<<8) + chipIDy)<<8)                + WEST,  MASK_ALL, CORE7);  // from W  7
-    rtr_mc_set(e+9,  (((mod(chipIDx-1, BOARDX)<<8) + chipIDy)<<8)                + EAST,  MASK_ALL, CORE10); // from E  10
-    rtr_mc_set(e+10, (((mod(chipIDx+1, BOARDX)<<8) + mod(chipIDy+1, BOARDY))<<8) + SWEST, MASK_ALL, CORE8);  // from SW 8
-    rtr_mc_set(e+11, (((mod(chipIDx-1, BOARDX)<<8) + mod(chipIDy-1, BOARDY))<<8) + NEAST, MASK_ALL, CORE11); // from NE 11
+    rtr_mc_set(e+6,  (((chipIDx<<8) + mod(chipIDy+1, YCHIPS))<<8)                + SOUTH, MASK_ALL, CORE9);  // from S  9
+    rtr_mc_set(e+7,  (((chipIDx<<8) + mod(chipIDy-1, YCHIPS))<<8)                + NORTH, MASK_ALL, CORE12); // from N  12
+    rtr_mc_set(e+8,  (((mod(chipIDx+1, XCHIPS)<<8) + chipIDy)<<8)                + WEST,  MASK_ALL, CORE7);  // from W  7
+    rtr_mc_set(e+9,  (((mod(chipIDx-1, XCHIPS)<<8) + chipIDy)<<8)                + EAST,  MASK_ALL, CORE10); // from E  10
+    rtr_mc_set(e+10, (((mod(chipIDx+1, XCHIPS)<<8) + mod(chipIDy+1, YCHIPS))<<8) + SWEST, MASK_ALL, CORE8);  // from SW 8
+    rtr_mc_set(e+11, (((mod(chipIDx-1, XCHIPS)<<8) + mod(chipIDy-1, YCHIPS))<<8) + NEAST, MASK_ALL, CORE11); // from NE 11
 
     //////////////////////////////////////////////////////
     // Set up external links for the decoding 'DONE' message
@@ -257,12 +275,12 @@ void router_setup(void)
 
     // Set up chip routes
     //         entry key                                                                      mask      route             
-    rtr_mc_set(e+18, (((chipIDx<<8) + mod(chipIDy+1, BOARDY))<<8)                + SOUTH + 6, MASK_ALL, CORE3); // from S
-    rtr_mc_set(e+19, (((chipIDx<<8) + mod(chipIDy-1, BOARDY))<<8)                + NORTH + 6, MASK_ALL, CORE6); // from N
-    rtr_mc_set(e+20, (((mod(chipIDx+1, BOARDX)<<8) + chipIDy)<<8)                + WEST  + 6, MASK_ALL, CORE1); // from W
-    rtr_mc_set(e+21, (((mod(chipIDx-1, BOARDX)<<8) + chipIDy)<<8)                + EAST  + 6, MASK_ALL, CORE4); // from E
-    rtr_mc_set(e+22, (((mod(chipIDx+1, BOARDX)<<8) + mod(chipIDy+1, BOARDY))<<8) + SWEST + 6, MASK_ALL, CORE2); // from SW
-    rtr_mc_set(e+23, (((mod(chipIDx-1, BOARDX)<<8) + mod(chipIDy-1, BOARDY))<<8) + NEAST + 6, MASK_ALL, CORE5); // from NE
+    rtr_mc_set(e+18, (((chipIDx<<8) + mod(chipIDy+1, YCHIPS))<<8)                + SOUTH + 6, MASK_ALL, CORE3); // from S
+    rtr_mc_set(e+19, (((chipIDx<<8) + mod(chipIDy-1, YCHIPS))<<8)                + NORTH + 6, MASK_ALL, CORE6); // from N
+    rtr_mc_set(e+20, (((mod(chipIDx+1, XCHIPS)<<8) + chipIDy)<<8)                + WEST  + 6, MASK_ALL, CORE1); // from W
+    rtr_mc_set(e+21, (((mod(chipIDx-1, XCHIPS)<<8) + chipIDy)<<8)                + EAST  + 6, MASK_ALL, CORE4); // from E
+    rtr_mc_set(e+22, (((mod(chipIDx+1, XCHIPS)<<8) + mod(chipIDy+1, YCHIPS))<<8) + SWEST + 6, MASK_ALL, CORE2); // from SW
+    rtr_mc_set(e+23, (((mod(chipIDx-1, XCHIPS)<<8) + mod(chipIDy-1, YCHIPS))<<8) + NEAST + 6, MASK_ALL, CORE5); // from NE
     
     // No longer needed
     // Drop all packets which don't have routes (used to drop packets which
@@ -445,7 +463,7 @@ void encode_decode(uint none1, uint none2)
       // Wait for turn to send data to host to avoid conflicts
       if (coreID>=1 && coreID<=6)
       {
-        while ((spin1_get_simulation_time() % (NUMBER_OF_XCHIPS_BOARD * NUMBER_OF_YCHIPS_BOARD * 6))
+        while ((spin1_get_simulation_time() % (XCHIPS_BOARD * YCHIPS_BOARD * 6))
                   != chipBoardNum*6+coreID-1);
         io_printf(IO_DEF, "Ticks: %d\n", spin1_get_simulation_time());
 
@@ -562,8 +580,6 @@ void tx_packets(int trialNum)
   int i, j, num, shift;
   uchar drop_pkt, mod_pkt;
 
-  //spin1_delay_us((chipID+coreID)*10);
-
   // Sending orig array size
   #ifdef FAULT_TESTING
     mod_pkt = 0;
@@ -583,7 +599,7 @@ void tx_packets(int trialNum)
       {
         num = (fault[j].orig_size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-        spin1_delay_us(1);
+        spin1_delay_us(DELAY);
         shift+=8;
       }
     }
@@ -594,7 +610,7 @@ void tx_packets(int trialNum)
       {
         num = (data_orig.size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-        spin1_delay_us(1);
+        spin1_delay_us(DELAY);
         shift+=8;
       }
     }
@@ -605,7 +621,7 @@ void tx_packets(int trialNum)
     {
       num = (data_orig.size>>shift) & 255;
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-      spin1_delay_us(1);
+      spin1_delay_us(DELAY);
       shift+=8;
     }
   #endif
@@ -629,7 +645,7 @@ void tx_packets(int trialNum)
       {
         num = (fault[j].enc_size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-        spin1_delay_us(1);
+        spin1_delay_us(DELAY);
         shift+=8;
       }
     }
@@ -640,7 +656,7 @@ void tx_packets(int trialNum)
       {
         num = (data_enc.size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-        spin1_delay_us(1);
+        spin1_delay_us(DELAY);
         shift+=8;
       }
     }
@@ -651,7 +667,7 @@ void tx_packets(int trialNum)
     {
       num = (data_enc.size>>shift) & 255;
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-      spin1_delay_us(1);
+      spin1_delay_us(DELAY);
       shift+=8;
     }
   #endif
@@ -690,7 +706,7 @@ void tx_packets(int trialNum)
 
     #endif
 
-    spin1_delay_us(1);
+    spin1_delay_us(DELAY);
   }
 
   // Sending encoded stream
@@ -726,7 +742,7 @@ void tx_packets(int trialNum)
 
     #endif
 
-    spin1_delay_us(1);
+    spin1_delay_us(DELAY);
   }
 
   #ifdef FAULT_TESTING
@@ -884,7 +900,7 @@ void report_status(uint ticks, uint null)
   int progress_sum=0;
 
 /*
-  if (chipIDx==0 && chipIDy==0 && coreID==13 && (ticks % (NUMBER_OF_XCHIPS * NUMBER_OF_YCHIPS))==chipNum )
+  if (chipIDx==0 && chipIDy==0 && coreID==13 && (ticks % (XCHIPS * YCHIPS))==chipNum )
   {
     for(i=0; i<6; i++)
       progress_sum+=info_tx->progress[i];
@@ -914,7 +930,7 @@ void report_status(uint ticks, uint null)
   // send results to host
   // only the lead application core does this
   // Spread out the reporting to avoid SDP packet drop
-  if (coreID==13 && !done && (ticks % (NUMBER_OF_XCHIPS * NUMBER_OF_YCHIPS)) == chipNum)
+  if (coreID==13 && !done && (ticks % (XCHIPS * YCHIPS)) == chipNum)
   {
     for(i=0; i<DECODE_ST_SIZE; i++)
       finish_tmp+=decode_status_chip[i];
@@ -1032,11 +1048,9 @@ void encode(void)
         {  
           t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
           
-          //io_printf(IO_DEF, "%d%% Time: %s s\n", progress, ftoa(t,1));
-
+          io_printf(IO_DEF, "%d%% Time: %s s\n", progress, ftoa(t,1));
           //info_tx->progress[coreID-1] = progress;
-
-          //progress_tmp = progress;
+          progress_tmp = progress;
         }
 
       }
@@ -1204,7 +1218,10 @@ void check_data(void)
   for(i=0; i<data_orig.size; i++)
   {  
     tmp = abs(data_orig.buffer[i] - data_dec.buffer[i]);
-      err+=tmp;
+    err+=tmp;
+
+    if (tmp)
+      io_printf(IO_DEF, "Error i=%d (%d)\n", i, tmp);
 
     #ifdef DEBUG
       if (i<data_enc.size)
@@ -1218,7 +1235,6 @@ void check_data(void)
     if (i<data_enc.size)
       for(i=data_orig.size; i<data_enc.size; i++)
         io_printf(IO_BUF, "%2d|       %3d\n", i, data_enc.buffer[i]);
-
   #endif
 
   // This is an encode/decode check on the same core (for data received from neighnouring chips)
@@ -1329,6 +1345,16 @@ uint spin1_get_chip_board_id()
 uint spin1_get_eth_board_id()
 {
   return (uint)sv->eth_addr;
+}
+
+// Reset JTAG controller
+void ijtag_init(void)
+{
+   // reset the jtag signals
+   sc[GPIO_CLR] = JTAG_TDI + JTAG_TCK + JTAG_TMS + JTAG_NTRST;
+
+   // select internal jtag signals
+   sc[SC_MISC_CTRL] |= JTAG_INT;
 }
 
 void fault_test_init(void)

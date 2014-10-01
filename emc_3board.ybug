@@ -1,0 +1,19 @@
+# make APP=lzss
+sp root
+
+app_stop 16
+
+sp 0 0
+iptag 1 set . 17894
+
+sp 4 8
+iptag 1 set . 17894
+
+sp 8 4
+iptag 1 set . 17894
+
+sp 0 0
+
+app_load emc.aplx all 1-16 16
+sleep
+app_sig all 16 sync0
