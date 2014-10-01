@@ -14,7 +14,7 @@
 
 #define TIMER_TICK_PERIOD  2000 // 10ms
 #define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
-#define SDRAM_BUFFER       1000000
+#define SDRAM_BUFFER       100000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define PACKETS_NUM        100000
@@ -26,8 +26,8 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
-#define TRIALS             1
-#define TX_REPS            20
+#define TRIALS             2
+#define TX_REPS            10
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)
@@ -864,23 +864,6 @@ void decode_rx_packets(uint none1, uint none2)
       // Decoding done
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xefffffff, WITH_PAYLOAD));
 
-/*      io_printf(IO_DEF, "Orig/Enc\n");
-      for(int i=0; i<data.orig_size+data.enc_size+8; i++)
-        io_printf(IO_DEF, "%2d: %d\n", i, data.buffer[i]);
-*/
-/*
-      io_printf(IO_DEF, "Original array (%d)\n", data_orig.size);
-      for(int i=0; i<data_orig.size; i++)
-        io_printf(IO_DEF, "%2d: %d\n", i, data_orig.buffer[i]);
-
-      io_printf(IO_DEF, "Encoded array (%d)\n", data_enc.size);
-      for(int i=0; i<data_enc.size; i++)
-        io_printf(IO_DEF, "%2d: %d\n", i, data_enc.buffer[i]);
-
-      io_printf(IO_DEF, "Decoded array (%d)\n", data_dec.size);
-      for(int i=0; i<data_dec.size; i++)
-        io_printf(IO_DEF, "%2d: %d\n", i, data_dec.buffer[i]);
-*/
       io_printf(IO_DEF, "Rx packets = Exp packets!\n");
     }
 
