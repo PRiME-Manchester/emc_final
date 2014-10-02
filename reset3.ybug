@@ -3,5 +3,5 @@ power off
 sleep 15
 power on
 sleep 15
-boot scamp.boot spin5-48x24.conf
+boot scamp.boot spin5-12x12.conf
 sleep 15

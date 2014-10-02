@@ -6,20 +6,18 @@
 
 #define abs(x) ((x)<0 ? -(x) : (x))
 
-#define NODEBUG
+#define NO_DEBUG
 #define NO_FAULT_TESTING
-#define BOARDS24
+#define BOARDS3
 
 // Switch between iobuf and iostd from this define
 #define IO_DEF IO_BUF
 
 #define TIMER_TICK_PERIOD  2000 // 10ms
-#define TOTAL_TICKS        500 // 100ms*30000 = 300s = 5min
 #define SDRAM_BUFFER       1000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
-#define PACKETS_NUM        100000
-#define DELAY              1 //us delay 
+#define DELAY              2 //us delay 
 
 #ifdef BOARDS3
   #define NUMBER_OF_CHIPS  144
@@ -77,6 +75,7 @@ uint error_pkt;
 typedef struct
 { 
   volatile uint trial_num;
+  volatile uint progress[12];
   volatile uint org_array_size;
   volatile uint enc_array_size;
   volatile uint dec_array_size;
@@ -163,6 +162,9 @@ void tx_packets(int trialNum);
 void fault_test_init(void);
 void ijtag_init(void);
 
+//Reporting
+void report_system_setup(void);
+
 int c_main(void)
 {
   // Get core and chip IDs
@@ -181,6 +183,11 @@ int c_main(void)
   chipBoardIDx = chipBoardID>>8;
   chipBoardIDy = chipBoardID&255;
   chipBoardNum = (chipBoardIDy * YCHIPS_BOARD) + chipBoardIDx;
+
+  // Reset JTAG controller if leadAp
+//  if (leadAp)
+//    ijtag_init();
+
   io_printf(IO_DEF, "chipID (%d,%d), chipID %d\n", chipIDx, chipIDy, chipNum);
   io_printf(IO_DEF, "chip_boardID (%d,%d), chipBoardNum %d\n", chipBoardIDx, chipBoardIDy, chipBoardNum);
 
@@ -190,12 +197,12 @@ int c_main(void)
   #ifdef FAULT_TESTING
     fault_test_init();
   #endif
+
   // initialise SDP message buffer
   sdp_init();
 
-  // Reset JTAG controller if leadAp
-//  if (leadAp)
-//    ijtag_init();
+  // Send system info to host
+  report_system_setup();
 
   // set timer tick value (in microseconds)
   spin1_set_timer_tick(TIMER_TICK_PERIOD);
@@ -205,7 +212,7 @@ int c_main(void)
   spin1_callback_on(MCPL_PACKET_RECEIVED, store_packets, -1);
 
   // Timer callback which reports status to the host
-  //spin1_callback_on(TIMER_TICK, report_status, 1);
+  spin1_callback_on(TIMER_TICK, report_status, 1);
 
   // Encode and decode the previously generated random data and store in SDRAM
   spin1_schedule_callback(encode_decode, 0, 0, 2);
@@ -385,6 +392,8 @@ void allocate_memory(void)
     //Initialize buffer
     for(i=0; i<SDRAM_BUFFER; i++)
       data_dec.buffer[i] = 0;
+  
+    data.stream_end = 1;
   }
 
 }
@@ -424,23 +433,35 @@ void encode_decode(uint none1, uint none2)
     uchar buf[];
   } iobuf_t;
 
-  int i, j, s_len, s_pos, len;
+  int i, j, s_len;
   int t1, t_e;
   int vbase, vsize; //size
   vcpu_t *vcpu;
   iobuf_t *iobuf;
   //int err=0;
-  char *s, s1[100];
+  char s[100];
 
   for(i=0; i<TRIALS; i++)
   {
+    // Send trial no. to host
+    if (chipIDx==0 && chipIDy==0 && leadAp)
+    {
+      t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
+      strcpy(s, "Time: ");
+      strcat(s, ftoa(t,1));
+      strcat(s, "s. Trial: ");
+      strcat(s, itoa(i+1));
+      s_len = count_chars(s);
+      send_msg(s, s_len);
+    }
+
     if (coreID>=1 && coreID<=DECODE_ST_SIZE)
     {
       io_printf(IO_DEF, "Trial: %d\n", i+1);
       
       //All chips
       info_tx->trial_num = i+1;
-      //info_tx->progress[coreID-1] = 0;
+      info_tx->progress[coreID-1] = 0;
       finish[coreID-1] = 0;
       
       /*******************************************************/
@@ -478,6 +499,9 @@ void encode_decode(uint none1, uint none2)
         t1 = spin1_get_simulation_time();
 
 /*
+        int s_pos, len;
+        char *s, s1[100];
+
         // Send 2 messages per core
         for(i=0; i<2; i++)
         {
@@ -525,7 +549,7 @@ void encode_decode(uint none1, uint none2)
       {
         io_printf(IO_DEF, "Transmitting packets (Rep %d) ...\n", j+1);
 
-        if (chipID==1 && coreID==1)
+        if (chipIDx==0 && chipIDy==0 && leadAp)
         {
           t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
           strcpy(s, "Time: ");
@@ -577,8 +601,12 @@ void encode_decode(uint none1, uint none2)
 // Cores 7-12 receive
 void tx_packets(int trialNum)
 {
-  int i, j, num, shift;
-  uchar drop_pkt, mod_pkt;
+  int i, num, shift;
+
+  #ifdef FAULT_TESTING
+    int j;
+    uchar drop_pkt, mod_pkt;
+  #endif
 
   // Sending orig array size
   #ifdef FAULT_TESTING
@@ -761,7 +789,9 @@ void tx_packets(int trialNum)
   #else
     // Send the EOF stream market twice to increase robustness
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+    spin1_delay_us(DELAY);
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+    spin1_delay_us(DELAY);
   #endif
 }
 
@@ -892,15 +922,13 @@ void decode_rx_packets(uint none1, uint none2)
 
 void report_status(uint ticks, uint null)
 {
-  uint i, s_len, finish_tmp=0;
-  int t;
+  uint i, t, finish_tmp=0;
+  int progress_sum=0;
   char s[100];
   static int done = 0;
   static int tmp = -1;
-  int progress_sum=0;
 
-/*
-  if (chipIDx==0 && chipIDy==0 && coreID==13 && (ticks % (XCHIPS * YCHIPS))==chipNum )
+  if (chipIDx==0 && chipIDy==0 && coreID==13 && (ticks % (XCHIPS_BOARD * YCHIPS_BOARD))==chipBoardNum )
   {
     for(i=0; i<6; i++)
       progress_sum+=info_tx->progress[i];
@@ -910,22 +938,20 @@ void report_status(uint ticks, uint null)
       t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
       
       strcpy(s, "Trial: ");
-      strcat(s, itoa(info_tx->trial[0]));
-
+      strcat(s, itoa(info_tx->trial_num));
       strcat(s, " Progress: ");
       strcat(s, itoa(progress_sum/6));
       strcat(s, "%% Time: ");
       strcat(s, ftoa(t,1));
       strcat(s, "s");
-      s_len = count_chars(s);
-      send_msg(s, s_len);
+      send_msg(s, count_chars(s));
 
       tmp = progress_sum;
     }
   }
-*/
 
-  //decode_status_chip[coreID-1] = decode_status;
+/*
+  decode_status_chip[coreID-1] = decode_status;
 
   // send results to host
   // only the lead application core does this
@@ -945,22 +971,14 @@ void report_status(uint ticks, uint null)
         if (i<DECODE_ST_SIZE-1)
           strcat(s, " ");
       }
-      s_len = count_chars(s);
-
       // Send SDP message
-      //send_msg(s, s_len);
+      send_msg(s, count_chars(s));
     }
 
     done = 1;
   }
+*/
 
-// Exit
-//  if (*msg_sent && finish_tmp == DECODE_ST_SIZE)
-//    spin1_exit(0);
-  
-  // Stop if desired number of ticks reached
-//  if (ticks >= TOTAL_TICKS)
-//    spin1_exit (0);
 }
 
 
@@ -1049,7 +1067,7 @@ void encode(void)
           t = (float)spin1_get_simulation_time()*TIMER_TICK_PERIOD/1000000;
           
           io_printf(IO_DEF, "%d%% Time: %s s\n", progress, ftoa(t,1));
-          //info_tx->progress[coreID-1] = progress;
+          info_tx->progress[coreID-1] = progress;
           progress_tmp = progress;
         }
 
@@ -1221,7 +1239,7 @@ void check_data(void)
     err+=tmp;
 
     if (tmp)
-      io_printf(IO_DEF, "Error i=%d (%d)\n", i, tmp);
+      io_printf(IO_DEF, "Error i=%d, Orig:%d Enc:%d Dec:%d\n", i, data_orig.buffer[i], data_enc.buffer[i], data_dec.buffer[i]);
 
     #ifdef DEBUG
       if (i<data_enc.size)
@@ -1355,6 +1373,39 @@ void ijtag_init(void)
 
    // select internal jtag signals
    sc[SC_MISC_CTRL] |= JTAG_INT;
+}
+
+void report_system_setup(void)
+{
+  char s[100];
+  int s_len;
+
+  if (chipIDx==0 && chipIDy==0 && leadAp)
+  {
+    strcpy(s, "System setup - ");
+    strcat(s, "Boards:");
+    #ifdef BOARDS3
+      strcat(s, "3, ");
+    #endif
+    #ifdef BOARDS24
+      strcat(s, "24, ");
+    #endif
+    strcat(s, "Chips:");
+    strcat(s, itoa(NUMBER_OF_CHIPS));
+    strcat(s, ", XChips:");
+    strcat(s, itoa(XCHIPS));
+    strcat(s, ", YChips:");
+    strcat(s, itoa(YCHIPS));
+    strcat(s, ", Trials:");
+    strcat(s, itoa(TRIALS));
+    strcat(s, ", Reps:");
+    strcat(s, itoa(TX_REPS));
+    strcat(s, ", Bytes:");
+    strcat(s, itoa(SDRAM_BUFFER));
+
+    s_len = count_chars(s);
+    send_msg(s, s_len);
+  }
 }
 
 void fault_test_init(void)
