@@ -8,13 +8,13 @@
 
 #define NO_DEBUG
 #define NO_FAULT_TESTING
-#define BOARDS3
+#define BOARDS24
 
 // Switch between iobuf and iostd from this define
 #define IO_DEF IO_BUF
 
 #define TIMER_TICK_PERIOD  2000 // 10ms
-#define SDRAM_BUFFER       1000000
+#define SDRAM_BUFFER       2000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define DELAY              2 //us delay 
@@ -38,8 +38,8 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6
-#define TRIALS             2
-#define TX_REPS            10
+#define TRIALS             20
+#define TX_REPS            1
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)
@@ -146,7 +146,7 @@ void sdp_init();
 char *itoa(uint n);
 char *ftoa(float num, int precision);
 int  count_chars(char *str);
-void check_data(void);
+void check_data(int trial_num);
 int mod(int x, int m);
 uint spin1_get_chip_board_id();
 uint spin1_get_eth_board_id();
@@ -191,7 +191,13 @@ int c_main(void)
   io_printf(IO_DEF, "chipID (%d,%d), chipID %d\n", chipIDx, chipIDy, chipNum);
   io_printf(IO_DEF, "chip_boardID (%d,%d), chipBoardNum %d\n", chipBoardIDx, chipBoardIDy, chipBoardNum);
 
+  // Initialize variables
   error_pkt = 0;
+  for(int i=0; i<12; i++)
+  {
+    info_tx->trial_num=0;
+    info_tx->progress[i]=0;
+  }
 
   // fault testing initialization
   #ifdef FAULT_TESTING
@@ -404,7 +410,8 @@ void gen_random_data(void)
   if (coreID>=1 && coreID<=CHIPS_TX_N)
   {
     //Seed random number generate
-    sark_srand(chipID + coreID);
+    //sark_srand(chipID + coreID);
+    sark_srand(35);
 
     //Initialize buffer
     for(uint i=0; i<SDRAM_BUFFER; i++)
@@ -476,7 +483,7 @@ void encode_decode(uint none1, uint none2)
       io_printf(IO_DEF, "\nDecoding...\n");
       decode();
 
-      check_data();
+      check_data(i+1);
 
       ////////////////////////////////////////
       // Send IO_BUF to host
@@ -544,7 +551,7 @@ void encode_decode(uint none1, uint none2)
 
       finish[coreID-1] = 1;
 
-
+/*
       for(j=0; j<TX_REPS; j++)
       {
         io_printf(IO_DEF, "Transmitting packets (Rep %d) ...\n", j+1);
@@ -590,6 +597,7 @@ void encode_decode(uint none1, uint none2)
 
         decode_done = 0;
       } 
+*/
 
     }
   }
@@ -905,7 +913,7 @@ void decode_rx_packets(uint none1, uint none2)
 
       decode();
 
-      check_data();
+      check_data(trial_num+1);
 
       // Decoding done
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xefffffff, WITH_PAYLOAD));
@@ -1218,11 +1226,10 @@ void decode(void)
   data_dec.size = textcount;
 }
 
-void check_data(void)
+void check_data(int trial_num)
 {
   int i, err = 0;
-  int tmp, s_len;
-  char s[80];
+  char s[100];
 
   // *** Put this decode checking in a separate function ***
   #ifdef DEBUG
@@ -1235,11 +1242,11 @@ void check_data(void)
   err=0;
   for(i=0; i<data_orig.size; i++)
   {  
-    tmp = abs(data_orig.buffer[i] - data_dec.buffer[i]);
-    err+=tmp;
-
-    if (tmp)
-      io_printf(IO_DEF, "Error i=%d, Orig:%d Enc:%d Dec:%d\n", i, data_orig.buffer[i], data_enc.buffer[i], data_dec.buffer[i]);
+    if (data_orig.buffer[i]!=data_dec.buffer[i])
+    {
+      io_printf(IO_DEF, "Error:%d i=%d, Orig:%d Enc:%d Dec:%d\n", err, i, data_orig.buffer[i], data_enc.buffer[i], data_dec.buffer[i]);
+      err++;
+    }
 
     #ifdef DEBUG
       if (i<data_enc.size)
@@ -1261,9 +1268,11 @@ void check_data(void)
     io_printf(IO_DEF, "ERROR! Original and Decoded Outputs do not match!!!\n");
 
     // Send SDP message
-    strcpy(s, "ERROR! Original and Decoded Outputs do not match!!!");
-    s_len = count_chars(s);
-    send_msg(s, s_len);
+    strcpy(s, "ERROR! Original and Decoded Outputs do not match!!! Trial: ");
+    strcat(s, itoa(trial_num));
+    strcat(s, ", Errors:");
+    strcat(s, itoa(err));
+    send_msg(s, count_chars(s));
 
     decode_status_chip[coreID-1] = 2;
   }

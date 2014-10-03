@@ -67,7 +67,9 @@ iptag 1 set . 17895
 sp 0 0
 
 # Load application
-app_load emc.aplx all 1-16 16
+#app_load emc.aplx all 1-16 16
+app_load emc.aplx @35,10 1-16 16
+
 sleep
 app_sig all 16 sync0
 
