@@ -1,0 +1,45 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use SpiNN::Cmd;
+
+die "usage: ver-xy <ip_addr> <X> <Y>\n" unless
+    $#ARGV == 2 &&
+    $ARGV[1] =~ /^\d+$/ &&
+    $ARGV[2] =~ /^\d+$/;
+
+
+my $spin = SpiNN::Cmd->new (target => $ARGV[0]);
+die "Can't connect to $ARGV[0]\n" unless $spin;
+
+for (my $y = 0; $y < $ARGV[2]; $y++)
+{
+    my $r = "";
+    my $e = "";
+
+    for (my $x = 0; $x < $ARGV[1]; $x++)
+    {
+	eval
+	{
+	    $spin->ver (addr => [$x, $y]);
+	};
+	    
+	if ($@)
+	{
+	    $r .= "X";
+	    $e = $@;
+	    chomp $e;
+	    $e =~ s/^error //;
+	    $e = "($x,$y) $e";
+	}
+	else
+	{
+	    $r .= ".";
+	}
+    }
+    printf "Y %3d $r $e\n", $y;
+}
+
+$spin->close ();
