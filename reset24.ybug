@@ -1,0 +1,24 @@
+sp 0 0
+power off
+sleep 10
+power on
+sleep 20
+boot scamp.boot spin5-48x24.conf
+sleep 10
+
+
+expert
+# receives wrong packet keys
+sp 9 0
+remap 16 phys
+
+# stuck at INIT
+sp 13 13
+remap 9 phys
+
+# RTE after some execution time
+sp 16 18
+remap 0 phys
+
+sp 0 0
+

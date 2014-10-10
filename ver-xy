@@ -1,4 +1,9 @@
 #!/usr/bin/perl
+# Usage
+# ver-xy <IP-address> <X dim> <Y dim>
+#
+# Example with 24 board machine
+# ver-xy 192.168.3.1 48 24
 
 use strict;
 use warnings;

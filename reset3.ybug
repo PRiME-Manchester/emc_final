@@ -1,7 +1,7 @@
 sp 0 0
 power off
-sleep 15
+sleep 5
 power on
-sleep 15
+sleep 10
 boot scamp.boot spin5-12x12.conf
-sleep 15
+sleep 5
