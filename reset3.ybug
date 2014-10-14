@@ -5,3 +5,11 @@ power on
 sleep 10
 boot scamp.boot spin5-12x12.conf
 sleep 5
+
+expert
+# Core 1 (phys) seems to be broken. It's corrupting its iobuf
+sp 11 6
+remap 1 phys
+
+sp 0 0
+sleep

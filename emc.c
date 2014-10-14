@@ -12,10 +12,11 @@
 #define TX_PACKETS // rename to disable transmission of packets between chips
 
 #define TIMER_TICK_PERIOD  2000 // 10ms
-#define SDRAM_BUFFER       20000
+#define SDRAM_BUFFER       2000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
-#define DELAY              2 //us delay 
+#define DELAY              1 //us delay 
+// #define NODELAY // this variable removes any delays, takes precedence over DELAY
 
 #ifdef BOARDS1
   #define NUMBER_OF_CHIPS 48
@@ -44,8 +45,8 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6 // this should be 6, set to 12 only for testing the SDRAM used by all 12 cores
-#define TRIALS             5 
-#define TX_REPS            100 
+#define TRIALS             20 
+#define TX_REPS            20 
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)
@@ -568,7 +569,9 @@ void tx_packets(int trialNum)
       {
         num = (fault[j].orig_size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+#ifndef NODELAY
         spin1_delay_us(DELAY);
+#endif
         shift+=8;
       }
     }
@@ -579,7 +582,9 @@ void tx_packets(int trialNum)
       {
         num = (data_orig.size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+#ifndef NODELAY
         spin1_delay_us(DELAY);
+#endif
         shift+=8;
       }
     }
@@ -589,7 +594,9 @@ void tx_packets(int trialNum)
     {
       num = (data_orig.size>>shift) & 255;
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+#ifndef NODELAY
       spin1_delay_us(DELAY);
+#endif
       shift+=8;
     }
 #endif
@@ -613,7 +620,9 @@ void tx_packets(int trialNum)
       {
         num = (fault[j].enc_size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+#ifndef NODELAY
         spin1_delay_us(DELAY);
+#endif
         shift+=8;
       }
     }
@@ -624,7 +633,9 @@ void tx_packets(int trialNum)
       {
         num = (data_enc.size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+#ifndef NODELAY
         spin1_delay_us(DELAY);
+#endif
         shift+=8;
       }
     }
@@ -634,7 +645,9 @@ void tx_packets(int trialNum)
     {
       num = (data_enc.size>>shift) & 255;
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
+#ifndef NODELAY
       spin1_delay_us(DELAY);
+#endif
       shift+=8;
     }
 #endif
@@ -707,7 +720,9 @@ void tx_packets(int trialNum)
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_enc.buffer[i], WITH_PAYLOAD));
 #endif
 
+#ifndef NODELAY
     spin1_delay_us(DELAY);
+#endif
   }
 
 #ifdef FAULT_TESTING
@@ -726,9 +741,13 @@ void tx_packets(int trialNum)
 #else
     // Send the EOF stream market twice to increase robustness
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+#ifndef NODELAY
     spin1_delay_us(DELAY);
+#endif
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+#ifndef NODELAY
     spin1_delay_us(DELAY);
+#endif
 #endif
 }
 
