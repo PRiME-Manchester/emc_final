@@ -11,8 +11,8 @@
 #define BOARDS24    // rename to BOARDS24 when working with the 24 board machine, BOARDS3 when using 3 board machine
 #define TX_PACKETS // rename to disable transmission of packets between chips
 
-#define TIMER_TICK_PERIOD  2000 // 10ms
-#define SDRAM_BUFFER       500000
+#define TIMER_TICK_PERIOD  10000 // 10ms
+#define SDRAM_BUFFER       1000000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define DELAY              2 //us delay 
@@ -45,8 +45,8 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6 // this should be 6, set to 12 only for testing the SDRAM used by all 12 cores
-#define TRIALS             100 
-#define TX_REPS            50 
+#define TRIALS             2 //using a buffer of 500000, trials=100, tx_reps=50 results in a run time of 8hrs 
+#define TX_REPS            10 
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)
@@ -68,7 +68,9 @@ uint coreID;
 uint chipID, chipBoardID, ethBoardID;
 uint chipIDx, chipIDy, chipNum;
 uint chipBoardIDx, chipBoardIDy, chipBoardNum;
-uint decode_status=0;
+uint decode_status = 0;
+uint eof_sent = 0;
+uint timeout = 0;
 
 volatile float t;
 uint t_int, t_frac;
@@ -130,13 +132,14 @@ sdram_rx_t data;
 typedef struct
 {
   int chipIDx, chipIDy;
-  int coreID;  //1-6
-  int trialNum;
+  int coreID;  //1-6 when testing the drop_pkt mechanism, 7-12 when testing the drop_ack
+  int trialNum, repNum; // repNum is only used with drop_ack
   int orig_size, enc_size, drop_eof;
   int orig_drop_pkt, orig_mod_pkt, orig_mod_val;
   int enc_drop_pkt,  enc_mod_pkt,  enc_mod_val;
+  int drop_ack;
 } fault_t;
-fault_t fault[5];
+fault_t fault[3];
 
 
 // Spinnaker function prototypes
@@ -569,9 +572,9 @@ void tx_packets(int trialNum)
       {
         num = (fault[j].orig_size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-#ifndef NODELAY
+  #ifndef NODELAY
         spin1_delay_us(DELAY);
-#endif
+  #endif
         shift+=8;
       }
     }
@@ -582,9 +585,9 @@ void tx_packets(int trialNum)
       {
         num = (data_orig.size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-#ifndef NODELAY
+  #ifndef NODELAY
         spin1_delay_us(DELAY);
-#endif
+  #endif
         shift+=8;
       }
     }
@@ -594,9 +597,9 @@ void tx_packets(int trialNum)
     {
       num = (data_orig.size>>shift) & 255;
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-#ifndef NODELAY
+  #ifndef NODELAY
       spin1_delay_us(DELAY);
-#endif
+  #endif
       shift+=8;
     }
 #endif
@@ -620,9 +623,9 @@ void tx_packets(int trialNum)
       {
         num = (fault[j].enc_size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-#ifndef NODELAY
+  #ifndef NODELAY
         spin1_delay_us(DELAY);
-#endif
+  #endif
         shift+=8;
       }
     }
@@ -633,9 +636,9 @@ void tx_packets(int trialNum)
       {
         num = (data_enc.size>>shift) & 255;
         while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-#ifndef NODELAY
+  #ifndef NODELAY
         spin1_delay_us(DELAY);
-#endif
+  #endif
         shift+=8;
       }
     }
@@ -645,9 +648,9 @@ void tx_packets(int trialNum)
     {
       num = (data_enc.size>>shift) & 255;
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, num, WITH_PAYLOAD));
-#ifndef NODELAY
+  #ifndef NODELAY
       spin1_delay_us(DELAY);
-#endif
+  #endif
       shift+=8;
     }
 #endif
@@ -679,7 +682,6 @@ void tx_packets(int trialNum)
       }
       else
         io_printf(IO_BUF, "Pkt %d dropped (Orig)!\n", i);
-
 
 #else
       while(!spin1_send_mc_packet((chipID<<8)+coreID-1, data_orig.buffer[i], WITH_PAYLOAD));
@@ -726,29 +728,35 @@ void tx_packets(int trialNum)
   }
 
 #ifdef FAULT_TESTING
-    drop_pkt = 0;
-    for(j=0; j<sizeof(fault); j++)
-      drop_pkt |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
-                  fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].drop_eof;
+  drop_pkt = 0;
+  for(j=0; j<sizeof(fault); j++)
+    drop_pkt |= fault[j].chipIDx==chipIDx && fault[j].chipIDy==chipIDy &&
+                fault[j].coreID==coreID && fault[j].trialNum==trialNum && fault[j].drop_eof;
 
-    // Drop 1 out of 2 packets
-    if (!drop_pkt)
-      while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
-    else
-      io_printf(IO_BUF, "One EOF marker packet dropped!\n");
-
+  // Drop 1 out of 2 packets
+  if (!drop_pkt)
     while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+  else
+    io_printf(IO_BUF, "One EOF marker packet dropped!\n");
+
+  while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
 #else
-    // Send the EOF stream market twice to increase robustness
-    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
-#ifndef NODELAY
-    spin1_delay_us(DELAY);
+  // Send the EOF stream market twice to increase robustness
+  while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+  
+  #ifndef NODELAY
+  spin1_delay_us(DELAY);
+  #endif
+  while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
+
+  #ifndef NODELAY
+  spin1_delay_us(DELAY);
+  #endif
+
 #endif
-    while(!spin1_send_mc_packet((chipID<<8)+coreID-1, 0xffffffff, WITH_PAYLOAD));
-#ifndef NODELAY
-    spin1_delay_us(DELAY);
-#endif
-#endif
+
+  // eof_sent is used in the ack received timeout
+  eof_sent = 1;
 }
 
 // Count the packets received
@@ -762,6 +770,7 @@ void store_packets(uint key, uint payload)
   else if (payload==0xefffffff)
   {
     decode_done = 1;
+    eof_sent    = 0;
   }
   else if (!error_pkt)
   {
@@ -886,6 +895,18 @@ void report_status(uint ticks, uint null)
       send_msg(s);
 
       tmp = info_tx->progress[0];
+    }
+  }
+
+  if (coreID>=1 && coreID<=6 && eof_sent)
+  {
+    timeout++;
+    if (timeout==1000) // if TIMER_TICK_PERIOD=10ms, this translates to a timeout of 10s 
+    {
+      timeout = 0;
+      eof_sent = 0;
+      io_printf(s, "Acknowledge timeout!");
+      send_msg(s);
     }
   }
 
@@ -1332,67 +1353,50 @@ void fault_test_init(void)
   fault[0].chipIDy        = 0;
   fault[0].coreID         = 6;
   fault[0].trialNum       = 2;
-  
+  fault[0].repNum         = -1;
   fault[0].orig_size      = 25;
   fault[0].enc_size       = 68;
   fault[0].drop_eof       = 1;
 
-  fault[0].orig_drop_pkt  = -1;  // packet no. to drop (orig. stream)
+  fault[0].orig_drop_pkt  = -1; // packet no. to drop (orig. stream)
   fault[0].orig_mod_pkt   = -1; // packet no. to modify
-  fault[0].orig_mod_val   = -1;  // packet modify value
+  fault[0].orig_mod_val   = -1; // packet modify value
   fault[0].enc_drop_pkt   = -1; // packet no. to drop (enc. stream)
   fault[0].enc_mod_pkt    = -1; // packet no. to modify
-  fault[0].enc_mod_val    = -1;  // packet modify value
-
+  fault[0].enc_mod_val    = -1; // packet modify value
+  fault[0].drop_ack       = -1; // drop ack
 
   // Fault 2
-  fault[1].chipIDx       = -1;
-  fault[1].chipIDy       = -1;
-  fault[1].coreID        = -1;
-  fault[1].trialNum      = -1;
-  fault[1].orig_size      = 0;
-  fault[1].enc_size       = 0;
-  fault[1].drop_eof       = 0;
+  fault[1].chipIDx       = 1;
+  fault[1].chipIDy       = 1;
+  fault[1].coreID        = 7;
+  fault[1].trialNum      = 2;
+  fault[1].repNum        = 5;
+  fault[1].orig_size     = 0;
+  fault[1].enc_size      = 0;
+  fault[1].drop_eof      = 0;
   fault[1].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
   fault[1].orig_mod_pkt  = 12; // packet no. to modify
   fault[1].orig_mod_val  = 1;  // packet modify value
   fault[1].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
   fault[1].enc_mod_pkt   = 12; // packet no. to modify
   fault[1].enc_mod_val   = 1;  // packet modify value
+  fault[1].drop_ack      = -1; // drop ack
 
   // Fault 3
   fault[2].chipIDx       = -1;
   fault[2].chipIDy       = -1;
   fault[2].coreID        = -1;
   fault[2].trialNum      = -1;
+  fault[2].repNum        = -1;
+  fault[2].repNum        = -1;
   fault[2].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
   fault[2].orig_mod_pkt  = 12; // packet no. to modify
   fault[2].orig_mod_val  = 1;  // packet modify value
   fault[2].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
   fault[2].enc_mod_pkt   = 12; // packet no. to modify
   fault[2].enc_mod_val   = 1;  // packet modify value
-
-  // Fault 4
-  fault[3].chipIDx       = -1;
-  fault[3].chipIDx       = -1;
-  fault[3].coreID        = -1;
-  fault[3].trialNum      = -1;
-  fault[3].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
-  fault[3].orig_mod_pkt  = 12; // packet no. to modify
-  fault[3].orig_mod_val  = 1;  // packet modify value
-  fault[3].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
-  fault[3].enc_mod_pkt   = 12; // packet no. to modify
-  fault[3].enc_mod_val   = 1;  // packet modify value
-
-  // Fault 5
-  fault[4].chipIDx       = -1;
-  fault[4].chipIDy       = -1;
-  fault[4].coreID        = -1;
-  fault[4].trialNum      = -1;
-  fault[4].orig_drop_pkt = 6;  // packet no. to drop (orig. stream)
-  fault[4].orig_mod_pkt  = 12; // packet no. to modify
-  fault[4].orig_mod_val  = 1;  // packet modify value
-  fault[4].enc_drop_pkt  = 17; // packet no. to drop (enc. stream)
-  fault[4].enc_mod_pkt   = 12; // packet no. to modify
-  fault[4].enc_mod_val   = 1;  // packet modify value
+  fault[2].drop_ack      = -1; // drop ack
 }
+
+
