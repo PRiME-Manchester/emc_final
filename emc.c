@@ -8,14 +8,14 @@
 
 #define NO_DEBUG   // rename to DEBUG to enable more verbose debugging on iobuf
 #define NO_FAULT_TESTING // rename to FAULT_TESTING when injecting faults in the Spinn Links
-#define BOARDS3    // rename to BOARDS24 when working with the 24 board machine, BOARDS3 when using 3 board machine
+#define BOARDS24    // rename to BOARDS24 when working with the 24 board machine, BOARDS3 when using 3 board machine
 #define TX_PACKETS // rename to disable transmission of packets between chips
 
 #define TIMER_TICK_PERIOD  2000 // 10ms
-#define SDRAM_BUFFER       2000000
+#define SDRAM_BUFFER       500000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
-#define DELAY              1 //us delay 
+#define DELAY              2 //us delay 
 // #define NODELAY // this variable removes any delays, takes precedence over DELAY
 
 #ifdef BOARDS1
@@ -45,8 +45,8 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6 // this should be 6, set to 12 only for testing the SDRAM used by all 12 cores
-#define TRIALS             20 
-#define TX_REPS            20 
+#define TRIALS             100 
+#define TX_REPS            50 
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)

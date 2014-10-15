@@ -8,17 +8,23 @@ sleep 10
 
 
 expert
+# Board 23
 # receives wrong packet keys
 sp 9 0
 remap 16 phys
 
+# Board 4 (this has been replaced)
 # stuck at INIT
-sp 13 13
-remap 9 phys
-
+#sp 13 13
+#remap 9 phys
 # RTE after some execution time
-sp 16 18
-remap 0 phys
+#sp 16 18
+#remap 0 phys
+
+# Board 7 (new board, had a broken core)
+# iobuf become corrupted
+sp 19 10
+remap 1 phys
 
 sp 0 0
 
