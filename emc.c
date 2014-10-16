@@ -12,7 +12,7 @@
 #define TX_PACKETS // rename to disable transmission of packets between chips
 
 #define TIMER_TICK_PERIOD  10000 // 10ms
-#define SDRAM_BUFFER       1000000
+#define SDRAM_BUFFER       500000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
 #define DELAY              2 //us delay 
@@ -45,8 +45,8 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6 // this should be 6, set to 12 only for testing the SDRAM used by all 12 cores
-#define TRIALS             2 //using a buffer of 500000, trials=100, tx_reps=50 results in a run time of 8hrs 
-#define TX_REPS            10 
+#define TRIALS             50 //using a buffer of 500000, trials=100, tx_reps=50 results in a run time of 8hrs 
+#define TX_REPS            50 
 
 // Address values
 #define FINISH             (SPINN_SDRAM_BASE + 0)                // size: 12 ints ( 0..11)
