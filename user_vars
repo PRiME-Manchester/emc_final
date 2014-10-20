@@ -1,0 +1,46 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use SpiNN::Cmd;
+use SpiNN::Struct;
+
+die "usage: user_vars <ip_addr> <X> <Y>\n" unless
+    $#ARGV == 2 &&
+    $ARGV[1] =~ /^\d+$/ &&
+    $ARGV[2] =~ /^\d+$/;
+
+my $spin = SpiNN::Cmd->new (target => $ARGV[0]);
+die unless $spin;
+
+my $sv = SpiNN::Struct->new (scp => $spin);
+die unless $sv;
+
+print " X  Y  C   User0    User1    User2    User3   \n";
+print "---------  -------- -------- -------- --------\n";
+
+for (my $x = 0; $x < $ARGV[1]; $x++)
+{
+  for (my $y = 0; $y < $ARGV[2]; $y++)
+  {
+  	eval
+	  {
+	    my $base = $sv->read_var ("sv.vcpu_base", addr => [$x, $y]);
+	    my $mem = $spin->read ($base, 128 * 18, addr => [$x, $y]);
+
+	    for (my $c = 1; $c <= 15; $c++)
+	    {
+    		my @vars = unpack "V4", substr $mem, 128 * $c + 112, 16;
+
+	    	next if $vars[0] == 0;
+
+		    printf "%2d %2d %2d  %08x %08x %08x %08x\n", $x, $y, $c, @vars;
+	    }
+	  };
+	
+	  printf "# %2d %2d:  $@", $x, $y if $@;
+  }
+}
+
+$spin->close ();
