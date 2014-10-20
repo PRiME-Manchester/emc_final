@@ -2,17 +2,6 @@
 sp root
 app_stop 16
 
-expert
-# receives wrong packet keys
-sp 9 0
-remap 16 phys
-# stuck at INIT
-sp 13 13
-remap 9 phys
-# RTE after some execution time
-sp 16 18
-remap 0 phys
-
 # Setup IP tags
 sp 0 0
 iptag 1 set . 17895
