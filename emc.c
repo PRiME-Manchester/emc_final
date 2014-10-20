@@ -45,7 +45,7 @@
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6 // this should be 6, set to 12 only for testing the SDRAM used by all 12 cores
-#define TRIALS             50 //using a buffer of 500000, trials=100, tx_reps=50 results in a run time of 8hrs 
+#define TRIALS             100 //using a buffer of 500000, trials=100, tx_reps=50 results in a run time of 8hrs 
 #define TX_REPS            50 
 
 // Address values
@@ -198,7 +198,7 @@ int c_main(void)
   if (leadAp)
     ijtag_init();
 
-  io_printf(IO_BUF, "ChipID (%d,%d), chipID %d\n", chipIDx, chipIDy, chipNum);
+  io_printf(IO_BUF, "ChipID (%d,%d), chipID %d coreID %d\n", chipIDx, chipIDy, chipNum, coreID);
   io_printf(IO_BUF, "Chip_boardID (%d,%d), ChipBoardNum %d\n", chipBoardIDx, chipBoardIDy, chipBoardNum);
 
   // Initialize variables

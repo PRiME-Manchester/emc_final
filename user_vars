@@ -11,36 +11,53 @@ die "usage: user_vars <ip_addr> <X> <Y>\n" unless
     $ARGV[1] =~ /^\d+$/ &&
     $ARGV[2] =~ /^\d+$/;
 
-my $spin = SpiNN::Cmd->new (target => $ARGV[0]);
+my $spin = SpiNN::Cmd->new(target => $ARGV[0]);
 die unless $spin;
 
-my $sv = SpiNN::Struct->new (scp => $spin);
+my $sv = SpiNN::Struct->new(scp => $spin);
 die unless $sv;
 
-print " X  Y  C   User0    User1    User2    User3   \n";
-print "---------  -------- -------- -------- --------\n";
+print "Printing out iobufs of Cores 1-12\n";
+print "---------------------------------\n\n";
 
-for (my $x = 0; $x < $ARGV[1]; $x++)
+for (my $x=0; $x<$ARGV[1]; $x++)
 {
-  for (my $y = 0; $y < $ARGV[2]; $y++)
+  for (my $y=0; $y<$ARGV[2]; $y++)
   {
-  	eval
-	  {
-	    my $base = $sv->read_var ("sv.vcpu_base", addr => [$x, $y]);
-	    my $mem = $spin->read ($base, 128 * 18, addr => [$x, $y]);
+   eval
+    {
+      my $vbase = $sv->read_var("sv.vcpu_base",  addr=>[$x,$y]);
+      my $size  = $sv->read_var("sv.iobuf_size", addr=>[$x,$y]);
+      my $vsize = $sv->size("vcpu");
 
-	    for (my $c = 1; $c <= 15; $c++)
-	    {
-    		my @vars = unpack "V4", substr $mem, 128 * $c + 112, 16;
+#      printf "vbase:%u size:%d vsize:%d\n", $vbase, $size, $vsize;
 
-	    	next if $vars[0] == 0;
+      for (my $core=1; $core<=12; $core++)
+      {
+        printf "Chip (%2d,%2d) Core %2d\n", $x, $y, $core;
+        print  "--------------------\n";
 
-		    printf "%2d %2d %2d  %08x %08x %08x %08x\n", $x, $y, $c, @vars;
-	    }
-	  };
-	
-	  printf "# %2d %2d:  $@", $x, $y if $@;
+        $sv->base("vcpu", $vbase + $vsize*$core);
+
+        my $iobuf = $sv->read_var("vcpu.iobuf", addr=>[$x,$y]);
+        
+        my $data = $spin->read($iobuf, $size+16, addr=>[$x,$y]);
+        my ($next, $time, $ms, $string) = unpack "V3 V/a*", $data;
+        print $string;
+
+
+#        while ($iobuf != 0)
+#        {
+#          my $data = $spin->read($iobuf, $size+16, addr=>[$x,$y]);
+#          my ($next, $time, $ms, $string) = unpack "V3 V/a*", $data;
+#          print $string;
+#        }
+        print "==============================\n\n";
+      }
+    };
+
   }
 }
 
 $spin->close ();
+
