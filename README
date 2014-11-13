@@ -34,4 +34,7 @@ ybug 192.168.3.0 -bmp 192.168.3.0/0-23
 # script (especially if there's a lot of traffic on the links)
 ./check_24board.sh
  
+# For a temperature visualization run (not in ybug):
+bmpstat 192.168.3.0
+
 
