@@ -1,12 +1,12 @@
-# setup local ip address
+# setup Laptop IP address
 ip=192.168.240.253
-masd=255.255.0.0
+mask=255.255.0.0
 
 # change directory
-cd /home/patrick/spinnaker-code/emc_final
+cd /home/spinnaker/patrick/spinnaker-code/emc_final
 
 # source spinnaker setup files
-source ../spinnaker_tools133/setup
+source ../spinnaker_tools_133/setup
 
 # ping 24 board bmp to check status
 ping 192.168.3.0
