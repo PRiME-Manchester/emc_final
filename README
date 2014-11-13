@@ -22,6 +22,9 @@ ybug 192.168.3.0 -bmp 192.168.3.0/0-23
 # load the bootup/reset program (this takes about a minute)
 @ reset24.ybug
 
+# Before starting the emc test program make sure that all cores and links are up:
+./check_24board.sh
+ 
 # Run the emc test program
 # This is the version compiled using the ARM compiler
 @ emc_24board_arm.ybug
@@ -30,8 +33,6 @@ ybug 192.168.3.0 -bmp 192.168.3.0/0-23
 @ emc_24board_quick.ybug
 
 # To check that all cores and links are up run (not in ybug):
-# Ideally do an 'app_stop 16' in ybug before running this
-# script (especially if there's a lot of traffic on the links)
 ./check_24board.sh
  
 # For a temperature visualization run (not in ybug):
