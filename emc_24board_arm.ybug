@@ -1,0 +1,65 @@
+# Goto root chip and stop any previous applications (using process id 16)
+sp root
+app_stop 16
+
+# Setup IP tags
+sp 0 0
+iptag 1 set . 17895
+sp 0 12
+iptag 1 set . 17895
+sp 4 8
+iptag 1 set . 17895
+sp 4 20
+iptag 1 set . 17895
+sp 8 4
+iptag 1 set . 17895
+sp 8 16
+iptag 1 set . 17895
+sp 12 0
+iptag 1 set . 17895
+sp 12 12
+iptag 1 set . 17895
+sp 16 8
+iptag 1 set . 17895
+sp 16 20
+iptag 1 set . 17895
+sp 20 4
+iptag 1 set . 17895
+sp 20 16
+iptag 1 set . 17895
+sp 24 0
+iptag 1 set . 17895
+sp 24 12
+iptag 1 set . 17895
+sp 28 8
+iptag 1 set . 17895
+sp 28 20
+iptag 1 set . 17895
+sp 32 4
+iptag 1 set . 17895
+sp 32 16
+iptag 1 set . 17895
+sp 36 0
+iptag 1 set . 17895
+sp 36 12
+iptag 1 set . 17895
+sp 40 8
+iptag 1 set . 17895
+sp 40 20
+iptag 1 set . 17895
+sp 44 4
+iptag 1 set . 17895
+sp 44 16
+iptag 1 set . 17895
+
+# Change to root chip
+sp 0 0
+
+# Load application
+app_load emc_arm.aplx all 1-16 16
+#app_load emc.aplx @35,10 1-16 16
+
+sleep 
+app_sig all 16 sync0
+
+
