@@ -1,0 +1,2 @@
+boot scamp.boot spin3.conf
+sleep 5

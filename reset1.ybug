@@ -1,0 +1,10 @@
+sp 0 0
+power off
+sleep 2
+power on
+sleep 5
+boot scamp.boot spin5.conf
+sleep 5
+
+sp 0 0
+sleep

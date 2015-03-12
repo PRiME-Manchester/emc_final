@@ -8,15 +8,24 @@
 
 #define NO_DEBUG   // rename to DEBUG to enable more verbose debugging on iobuf
 #define NO_FAULT_TESTING // rename to FAULT_TESTING when injecting faults in the Spinn Links
-#define BOARDS24    // rename to BOARDS24 when working with the 24 board machine, BOARDS3 when using 3 board machine
+#define BOARDS1    // rename to BOARDS24 when working with the 24 board machine, BOARDS3 when using 3 board machine
 #define TX_PACKETS // rename to disable transmission of packets between chips
 
 #define TIMER_TICK_PERIOD  10000 // 10ms
-#define SDRAM_BUFFER       500000
+#define SDRAM_BUFFER       200000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
-#define DELAY              2 //us delay 
+#define DELAY              5 //us delay 
 // #define NODELAY // this variable removes any delays, takes precedence over DELAY
+
+#ifdef BOARDS_SPINN3
+  #define NUMBER_OF_CHIPS 4
+  #define XCHIPS 2
+  #define YCHIPS 2
+  #define XCHIPS_BOARD 2
+  #define YCHIPS_BOARD 28
+  #define BOARDS 1
+#endif
 
 #ifdef BOARDS1
   #define NUMBER_OF_CHIPS 48
@@ -24,6 +33,7 @@
   #define YCHIPS 8
   #define XCHIPS_BOARD 8
   #define YCHIPS_BOARD 8
+  #define BOARDS 1
 #endif
 
 #ifdef BOARDS3
@@ -32,6 +42,7 @@
   #define YCHIPS           12
   #define XCHIPS_BOARD     8
   #define YCHIPS_BOARD     8
+  #define BOARDS 3
 #endif 
 
 #ifdef BOARDS24
@@ -40,12 +51,13 @@
   #define YCHIPS           24
   #define XCHIPS_BOARD     8
   #define YCHIPS_BOARD     8
+  #define BOARDS 24
 #endif
 
 #define CHIPS_TX_N         6
 #define CHIPS_RX_N         6
 #define DECODE_ST_SIZE     6 // this should be 6, set to 12 only for testing the SDRAM used by all 12 cores
-#define TRIALS             100 //using a buffer of 500000, trials=100, tx_reps=50 results in a run time of 8hrs 
+#define TRIALS             50 //using a buffer of 500000, trials=100, tx_reps=50 results in a run time of 8hrs 
 #define TX_REPS            50 
 
 // Address values
@@ -1333,15 +1345,11 @@ void ijtag_init(void)
 void report_system_setup(void)
 {
   char s[100];
-  int boards=3;
 
   if (chipIDx==0 && chipIDy==0 && leadAp)
   {
-#ifdef BOARDS24
-    boards = 24;
-#endif
     io_printf(s, "System setup - Boards:%d, Chips:%d, XChips:%d, YChips:%d, Trials:%d, Reps:%d, Bytes:%d",
-                                 boards, NUMBER_OF_CHIPS, XCHIPS, YCHIPS, TRIALS, TX_REPS, SDRAM_BUFFER);
+                                 BOARDS, NUMBER_OF_CHIPS, XCHIPS, YCHIPS, TRIALS, TX_REPS, SDRAM_BUFFER);
     send_msg(s);
   }
 }
