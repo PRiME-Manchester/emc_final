@@ -8,15 +8,23 @@
 
 #define NO_DEBUG   // rename to DEBUG to enable more verbose debugging on iobuf
 #define NO_FAULT_TESTING // rename to FAULT_TESTING when injecting faults in the Spinn Links
-#define BOARDS24    // rename to BOARDS24 when working with the 24 board machine, BOARDS3 when using 3 board machine
+#define BOARDS_SPINN3    // rename to BOARDS24 when working with the 24 board machine, BOARDS3 when using 3 board machine
 #define TX_PACKETS // rename to disable transmission of packets between chips
 
 #define TIMER_TICK_PERIOD  10000 // 10ms
-#define SDRAM_BUFFER       500000
+#define SDRAM_BUFFER       100000
 #define SDRAM_BUFFER_X     (SDRAM_BUFFER*1.2)
 #define LZSS_EOF           -1
-#define DELAY              2 //us delay 
+#define DELAY              4 //us delay 
 // #define NODELAY // this variable removes any delays, takes precedence over DELAY
+
+#ifdef BOARDS_SPINN3
+  #define NUMBER_OF_CHIPS 4
+  #define XCHIPS 2
+  #define YCHIPS 2
+  #define XCHIPS_BOARD 2
+  #define YCHIPS_BOARD 2
+#endif
 
 #ifdef BOARDS1
   #define NUMBER_OF_CHIPS 48
@@ -308,7 +316,7 @@ void router_setup(void)
     // No longer needed
     // Drop all packets which don't have routes (used to drop packets which
     // wraparound for 3-board and 24-board machines and don't have proper routes configures)
-    //rtr_mc_set(e+12, 0, 0, 0);
+    //rtr_mc_set(e+24, 0, 0, 0);
   }
 
   /* ------------------------------------------------------------------- */
